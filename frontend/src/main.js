@@ -32,6 +32,14 @@ function initApp() {
     modal: null,          // song being confirmed
     modalUser: '',
 
+    // YouTube
+    ytModal: false,
+    ytQuery: '',
+    ytResults: [],
+    ytSearching: false,
+    ytError: null,
+    ytDownloads: {},   // job_id -> job object
+
     // Toast
     toast: null,
     toastTimer: null,
@@ -208,6 +216,74 @@ function initApp() {
       } catch {
         this.showToast('Failed to update like', 'error')
       }
+    },
+
+    // ── YouTube ────────────────────────────────────────────────────────────
+    openYouTube() {
+      this.ytQuery = this.query
+      this.ytModal = true
+      this.ytResults = []
+      this.ytError = null
+      if (this.ytQuery) this.ytSearch()
+    },
+
+    closeYouTube() {
+      this.ytModal = false
+    },
+
+    async ytSearch() {
+      if (!this.ytQuery.trim()) return
+      this.ytSearching = true
+      this.ytError = null
+      this.ytResults = []
+      try {
+        const res = await fetch(`/api/youtube/search?q=${encodeURIComponent(this.ytQuery)}`)
+        const data = await res.json()
+        this.ytResults = data.results
+        if (!this.ytResults.length) this.ytError = 'No results found'
+      } catch {
+        this.ytError = 'Search failed — check connection'
+      } finally {
+        this.ytSearching = false
+      }
+    },
+
+    async ytDownload(video) {
+      try {
+        const res = await fetch('/api/youtube/download', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url: video.url, title: video.title }),
+        })
+        if (!res.ok) throw new Error()
+        const { job_id } = await res.json()
+        this.$set(this.ytDownloads, job_id, { status: 'pending', progress: 0, title: video.title })
+        this._pollDownload(job_id)
+      } catch {
+        this.showToast('Failed to start download', 'error')
+      }
+    },
+
+    _pollDownload(job_id) {
+      const poll = async () => {
+        try {
+          const res = await fetch(`/api/youtube/download/${job_id}`)
+          const job = await res.json()
+          this.ytDownloads = { ...this.ytDownloads, [job_id]: job }
+          if (job.status === 'done') {
+            this.showToast(`"${job.title}" downloaded — library rescanning…`)
+            return
+          }
+          if (job.status === 'error') {
+            this.showToast(`Download failed: ${job.error || 'unknown error'}`, 'error')
+            return
+          }
+          setTimeout(poll, 1500)
+        } catch {
+          setTimeout(poll, 3000)
+        }
+      }
+      setTimeout(poll, 1500)
     },
 
     // ── Toast ──────────────────────────────────────────────────────────────

@@ -12,7 +12,7 @@ from .database import init_db
 from .library import library
 from .stream_manager import stream_manager
 from .queue_manager import queue_manager
-from .routers import songs, queue, stream, ws, library as library_router
+from .routers import songs, queue, stream, ws, library as library_router, youtube as youtube_router
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
@@ -39,6 +39,7 @@ app = FastAPI(title="SuperKaraoke", lifespan=lifespan)
 app.include_router(songs.router,          prefix="/api")
 app.include_router(queue.router,          prefix="/api")
 app.include_router(library_router.router, prefix="/api")
+app.include_router(youtube_router.router, prefix="/api")
 app.include_router(stream.router)
 app.include_router(ws.router)
 

@@ -162,6 +162,17 @@
           </template>
         </div>
 
+        <!-- YouTube search CTA -->
+        <div x-show="query" class="flex justify-center pt-2">
+          <button @click="openYouTube()"
+            class="flex items-center gap-2 px-4 py-2 rounded-xl border border-red-200 dark:border-red-900 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/40 text-sm font-medium transition-colors">
+            <svg class="w-4 h-4 shrink-0" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M23.498 6.186a3.016 3.016 0 00-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 00.502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 002.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 002.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z"/>
+            </svg>
+            Search YouTube for a karaoke version
+          </button>
+        </div>
+
         <!-- Pagination -->
         <div x-show="totalPages > 1" class="flex items-center justify-center gap-2 pt-2">
           <button @click="prevPage()" :disabled="page === 0" class="btn-ghost">← Prev</button>
@@ -218,6 +229,111 @@
       </aside>
     </div>
   </main>
+
+  <!-- ── YouTube modal ─────────────────────────────────────────────────── -->
+  <div
+    x-show="ytModal"
+    x-transition:enter="transition-opacity duration-200"
+    x-transition:enter-start="opacity-0"
+    x-transition:enter-end="opacity-100"
+    x-transition:leave="transition-opacity duration-150"
+    x-transition:leave-start="opacity-100"
+    x-transition:leave-end="opacity-0"
+    class="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-4 bg-black/50 backdrop-blur-sm"
+    @click="closeYouTube()"
+  >
+    <div
+      class="card w-full max-w-2xl shadow-2xl flex flex-col max-h-[85vh]"
+      x-transition:enter="transition duration-200"
+      x-transition:enter-start="opacity-0 translate-y-4 sm:scale-95"
+      x-transition:enter-end="opacity-100 translate-y-0 sm:scale-100"
+      @click.stop
+    >
+      <!-- Header -->
+      <div class="px-5 pt-5 pb-3 border-b border-gray-200 dark:border-gray-800 shrink-0">
+        <div class="flex items-center gap-2 mb-3">
+          <svg class="w-5 h-5 text-red-500 shrink-0" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M23.498 6.186a3.016 3.016 0 00-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 00.502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 002.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 002.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z"/>
+          </svg>
+          <h2 class="font-semibold text-base">Search YouTube</h2>
+          <button @click="closeYouTube()" class="ml-auto btn-ghost p-1 text-gray-400">✕</button>
+        </div>
+        <div class="flex gap-2">
+          <input
+            x-model="ytQuery"
+            @keyup.enter="ytSearch()"
+            type="search"
+            placeholder="Search YouTube…"
+            class="input flex-1"
+          />
+          <button @click="ytSearch()" :disabled="ytSearching" class="btn-primary shrink-0">
+            <span x-text="ytSearching ? 'Searching…' : 'Search'"></span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Results -->
+      <div class="flex-1 overflow-y-auto px-5 py-3 flex flex-col gap-2">
+
+        <!-- Loading -->
+        <template x-if="ytSearching">
+          <div class="py-12 text-center text-gray-400 animate-pulse">Searching YouTube…</div>
+        </template>
+
+        <!-- Error -->
+        <template x-if="!ytSearching && ytError">
+          <div class="py-12 text-center text-gray-400 dark:text-gray-600">
+            <p class="text-2xl mb-2">🔍</p>
+            <p x-text="ytError"></p>
+          </div>
+        </template>
+
+        <!-- Result rows -->
+        <template x-for="v in ytResults" :key="v.id">
+          <div class="flex items-center gap-3 rounded-xl border border-gray-100 dark:border-gray-800 p-2 hover:border-brand-300 dark:hover:border-brand-700 transition-colors">
+            <!-- Thumbnail -->
+            <div class="shrink-0 w-28 h-16 rounded-lg overflow-hidden bg-gray-100 dark:bg-gray-800">
+              <img :src="v.thumbnail" :alt="v.title" class="w-full h-full object-cover" loading="lazy" />
+            </div>
+            <!-- Info -->
+            <div class="flex-1 min-w-0">
+              <p class="text-sm font-medium leading-snug line-clamp-2" x-text="v.title"></p>
+              <p class="text-xs text-gray-500 dark:text-gray-400 mt-0.5 truncate">
+                <span x-text="v.channel"></span>
+                <span x-show="v.duration" class="ml-2 tabular-nums" x-text="v.duration"></span>
+              </p>
+              <!-- Per-video download status -->
+              <template x-for="[jid, job] in Object.entries(ytDownloads).filter(([,j]) => j.title === v.title)" :key="jid">
+                <div class="mt-1 flex items-center gap-2">
+                  <div class="flex-1 h-1.5 rounded-full bg-gray-200 dark:bg-gray-700 overflow-hidden">
+                    <div class="h-full bg-brand-500 transition-all duration-300 rounded-full"
+                      :style="`width:${job.progress}%`"></div>
+                  </div>
+                  <span class="text-xs tabular-nums shrink-0"
+                    :class="job.status === 'done' ? 'text-green-500' : job.status === 'error' ? 'text-red-500' : 'text-gray-400'"
+                    x-text="job.status === 'done' ? '✓ Done' : job.status === 'error' ? '✕ Error' : job.progress + '%'">
+                  </span>
+                </div>
+              </template>
+            </div>
+            <!-- Download button -->
+            <button
+              @click="ytDownload(v)"
+              :disabled="Object.values(ytDownloads).some(j => j.title === v.title && j.status !== 'done' && j.status !== 'error')"
+              class="shrink-0 btn-primary text-sm px-3 py-1.5 disabled:opacity-40"
+            >
+              ↓ Download
+            </button>
+          </div>
+        </template>
+      </div>
+
+      <!-- Footer note -->
+      <div class="px-5 py-3 border-t border-gray-200 dark:border-gray-800 shrink-0 text-xs text-gray-400 dark:text-gray-600">
+        Downloads save to <span class="font-mono" x-text="'media/Downloads/'"></span> and appear in the library after rescanning.
+      </div>
+    </div>
+  </div>
 
   <!-- ── Enqueue modal ──────────────────────────────────────────────────── -->
   <div
