@@ -65,6 +65,13 @@ def _build_ffmpeg_cmd(song: dict, semitones: int = 0) -> list[str]:
         ]
 
 
+# Buffer enough of the stream start for late subscribers to receive the
+# initial ftyp+moov boxes.  The moov atom for empty_moov is tiny (~500 B)
+# but we keep 512 KB so even slow subscribers that connect a second late
+# still get a complete, parseable stream start.
+_HEADER_BUF_BYTES = 512 * 1024
+
+
 @dataclass
 class StreamBroadcaster:
     song_id: str
@@ -73,10 +80,20 @@ class StreamBroadcaster:
     subscribers: list[asyncio.Queue] = field(default_factory=list)
     _process: Optional[asyncio.subprocess.Process] = field(default=None, repr=False)
     _task: Optional[asyncio.Task] = field(default=None, repr=False)
+    _header_buf: list[bytes] = field(default_factory=list)
     done: bool = False
 
     def subscribe(self) -> asyncio.Queue:
-        q: asyncio.Queue = asyncio.Queue(maxsize=256)
+        # Queue size: 256 slots + room for replayed header chunks
+        q: asyncio.Queue = asyncio.Queue(maxsize=512)
+        # Replay buffered header so late subscribers get a parseable stream start.
+        # Safe without locks: asyncio is single-threaded; _pump only mutates
+        # _header_buf between its own await points, never concurrently with this.
+        for chunk in self._header_buf:
+            try:
+                q.put_nowait(chunk)
+            except asyncio.QueueFull:
+                break
         self.subscribers.append(q)
         return q
 
@@ -94,10 +111,16 @@ class StreamBroadcaster:
             self._process = await asyncio.create_subprocess_exec(
                 *cmd, stdout=PIPE, stderr=DEVNULL
             )
+            buf_size = 0
             while True:
                 chunk = await self._process.stdout.read(settings.stream_chunk_size)
                 if not chunk:
                     break
+                # Buffer stream start so late-joining subscribers receive the
+                # initial ftyp+moov boxes and can parse the fragmented MP4.
+                if buf_size < _HEADER_BUF_BYTES:
+                    self._header_buf.append(chunk)
+                    buf_size += len(chunk)
                 # Distribute to all subscribers; drop slow ones to avoid backpressure
                 for q in list(self.subscribers):
                     try:
