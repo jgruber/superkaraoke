@@ -40,6 +40,11 @@ function initLibrary() {
     mbResults: [],
     mbError: null,
 
+    // Import confirmation
+    importConfirm: false,
+    importing: false,
+    _importFile: null,
+
     // Toast
     toast: null,
     _toastTimer: null,
@@ -239,6 +244,46 @@ function initLibrary() {
       if (result.genre)  this.song.genre  = result.genre
       this.mbOpen = false
       this.showToast('Applied — review and save')
+    },
+
+    // ── Export / Import ───────────────────────────────────────────────────
+    exportDb() {
+      window.location.href = '/api/library/export'
+    },
+
+    pickImportFile() {
+      this.$refs.importFileInput.value = ''
+      this.$refs.importFileInput.click()
+    },
+
+    onImportFilePicked(event) {
+      const file = event.target.files[0]
+      if (!file) return
+      this._importFile = file
+      this.importConfirm = true
+    },
+
+    async confirmImport() {
+      if (!this._importFile) return
+      this.importing = true
+      try {
+        const body = new FormData()
+        body.append('file', this._importFile)
+        const r = await fetch('/api/library/import', { method: 'POST', body })
+        if (!r.ok) {
+          const err = await r.json().catch(() => ({}))
+          throw new Error(err.detail || 'Import failed')
+        }
+        const d = await r.json()
+        this.importConfirm = false
+        this._importFile = null
+        this.showToast(`Imported — ${d.songs.toLocaleString()} songs. Rescanning…`)
+        setTimeout(() => { this.fetchStats(); this.fetchSongs() }, 3000)
+      } catch (e) {
+        this.showToast(e.message || 'Import failed', 'error')
+      } finally {
+        this.importing = false
+      }
     },
 
     // ── Toast ─────────────────────────────────────────────────────────────

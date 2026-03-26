@@ -8,14 +8,16 @@ POST /api/library/{song_id}/lookup  — MusicBrainz search (returns candidates)
 POST /api/library/scan         — trigger a background filesystem rescan
 GET  /api/library/stats        — aggregate counts for dashboard header
 """
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, UploadFile, File
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from typing import Optional
 
 from ..library import library
+from ..config import settings
 from ..database import (
     get_song, update_song_metadata, redetect_song_metadata,
-    get_library_stats, search_songs, delete_song,
+    get_library_stats, search_songs, delete_song, init_db, count_songs,
 )
 from ..metadata import extract_metadata, search_musicbrainz
 
@@ -118,3 +120,47 @@ async def musicbrainz_lookup(
 async def trigger_scan(background_tasks: BackgroundTasks):
     background_tasks.add_task(library.scan)
     return {"status": "scan started"}
+
+
+# ── Export / Import ────────────────────────────────────────────────────────────
+
+_SQLITE_MAGIC = b"SQLite format 3\x00"
+
+
+@router.get("/library/export")
+async def export_database():
+    if not settings.db_path.exists():
+        raise HTTPException(status_code=404, detail="Database not found")
+    return FileResponse(
+        str(settings.db_path),
+        media_type="application/x-sqlite3",
+        filename="superkaraoke.db",
+    )
+
+
+@router.post("/library/import")
+async def import_database(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+):
+    content = await file.read()
+
+    if len(content) < 16 or content[:16] != _SQLITE_MAGIC:
+        raise HTTPException(status_code=400, detail="Not a valid SQLite database file")
+
+    tmp_path = settings.db_path.with_suffix(".import_tmp")
+    try:
+        tmp_path.write_bytes(content)
+        tmp_path.rename(settings.db_path)
+    except Exception as exc:
+        tmp_path.unlink(missing_ok=True)
+        raise HTTPException(status_code=500, detail=f"Failed to save database: {exc}")
+
+    # Apply any pending schema migrations to the imported DB
+    await init_db()
+    library._song_count = await count_songs()
+
+    # Rescan in background to validate file paths against this server's media dir
+    background_tasks.add_task(library.scan)
+
+    return {"status": "imported", "songs": library._song_count}
