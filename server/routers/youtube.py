@@ -51,11 +51,8 @@ def _do_search(query: str) -> list[dict]:
                 vid_id = e.get("id", "")
                 if not vid_id:
                     continue
-                duration_s = e.get("duration")
-                duration = (
-                    f"{duration_s // 60}:{duration_s % 60:02d}"
-                    if duration_s else ""
-                )
+                duration_s = int(e.get("duration") or 0)
+                duration = f"{duration_s // 60}:{duration_s % 60:02d}" if duration_s else ""
                 results.append({
                     "id": vid_id,
                     "title": e.get("title", ""),
@@ -130,9 +127,20 @@ async def _run_download(job_id: str, url: str):
         await loop.run_in_executor(None, _do_download, job_id, url)
         job["status"] = "done"
         job["progress"] = 100
-        # Trigger library rescan so the new file appears immediately
+        # Rescan so the new file is indexed, then resolve its song_id
         from ..library import library
-        asyncio.create_task(library.scan())
+        from ..database import search_songs
+        await library.scan()
+        filename = job.get("filename", "")
+        if filename:
+            results, _ = await search_songs(
+                query=Path(filename).stem, limit=5, include_duplicates=True
+            )
+            # Match by file path — the downloaded file lands in DOWNLOADS_DIR
+            for s in results:
+                if Path(s.get("file_path", "")).stem == Path(filename).stem:
+                    job["song_id"] = s["id"]
+                    break
     except Exception as exc:
         log.error("Download failed for job %s: %s", job_id, exc)
         job["status"] = "error"

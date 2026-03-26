@@ -257,7 +257,7 @@ function initApp() {
         })
         if (!res.ok) throw new Error()
         const { job_id } = await res.json()
-        this.$set(this.ytDownloads, job_id, { status: 'pending', progress: 0, title: video.title })
+        this.ytDownloads = { ...this.ytDownloads, [job_id]: { status: 'pending', progress: 0, title: video.title } }
         this._pollDownload(job_id)
       } catch {
         this.showToast('Failed to start download', 'error')
@@ -271,7 +271,18 @@ function initApp() {
           const job = await res.json()
           this.ytDownloads = { ...this.ytDownloads, [job_id]: job }
           if (job.status === 'done') {
-            this.showToast(`"${job.title}" downloaded — library rescanning…`)
+            if (job.song_id) {
+              const user = localStorage.getItem('sk-username') || 'anonymous'
+              await fetch('/api/queue', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ song_id: job.song_id, user }),
+              })
+              this.showToast(`"${job.title}" downloaded and added to queue`)
+              this.closeYouTube()
+            } else {
+              this.showToast(`"${job.title}" downloaded — search to add to queue`)
+            }
             return
           }
           if (job.status === 'error') {
