@@ -4,6 +4,7 @@ export default {
   content: [
     './index.html',
     './screen.html',
+    './library.html',
     './src/**/*.{js,ts}',
   ],
   theme: {
