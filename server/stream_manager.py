@@ -1,0 +1,172 @@
+"""
+Streaming engine.
+
+One ffmpeg subprocess per active song. Its stdout is broadcast to all
+connected /stream/{song_id} HTTP clients via per-subscriber asyncio.Queue.
+No second port — everything flows through FastAPI's StreamingResponse.
+
+CDG+MP3 is handled by passing both inputs to ffmpeg:
+  ffmpeg -i audio.mp3 -i video.cdg ...
+Video files are transcoded to fragmented MP4 for browser compatibility.
+"""
+import asyncio
+import logging
+import shlex
+from asyncio.subprocess import PIPE, DEVNULL
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Optional
+
+from .config import settings
+
+log = logging.getLogger(__name__)
+
+# Fragmented MP4 flags required for live HTTP streaming (no seekable moov atom)
+FRAG_FLAGS = "frag_keyframe+empty_moov+default_base_moof"
+
+
+def _pitch_filter(semitones: int) -> list[str]:
+    """Return -af rubberband filter args for the given semitone offset, or [] for no shift."""
+    if semitones == 0:
+        return []
+    ratio = 2 ** (semitones / 12)
+    return ["-af", f"rubberband=pitch={ratio}"]
+
+
+def _build_ffmpeg_cmd(song: dict, semitones: int = 0) -> list[str]:
+    kind = song["kind"]
+    loglevel = settings.ffmpeg_loglevel
+    pitch = _pitch_filter(semitones)
+
+    if kind == "cdg":
+        audio_path = song["path"]
+        cdg_path = song["cdg_path"]
+        return [
+            "ffmpeg", "-loglevel", loglevel,
+            "-i", audio_path,       # input 0: MP3 audio
+            "-i", cdg_path,         # input 1: CDG video
+            "-map", "1:v",          # video from CDG
+            "-map", "0:a",          # audio from MP3
+            *pitch,
+            "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23",
+            "-c:a", "aac", "-b:a", "192k",
+            "-f", "mp4", "-movflags", FRAG_FLAGS,
+            "pipe:1",
+        ]
+    else:
+        return [
+            "ffmpeg", "-loglevel", loglevel,
+            "-i", song["path"],
+            *pitch,
+            "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23",
+            "-c:a", "aac", "-b:a", "192k",
+            "-f", "mp4", "-movflags", FRAG_FLAGS,
+            "pipe:1",
+        ]
+
+
+@dataclass
+class StreamBroadcaster:
+    song_id: str
+    song: dict
+    semitones: int = 0
+    subscribers: list[asyncio.Queue] = field(default_factory=list)
+    _process: Optional[asyncio.subprocess.Process] = field(default=None, repr=False)
+    _task: Optional[asyncio.Task] = field(default=None, repr=False)
+    done: bool = False
+
+    def subscribe(self) -> asyncio.Queue:
+        q: asyncio.Queue = asyncio.Queue(maxsize=256)
+        self.subscribers.append(q)
+        return q
+
+    def unsubscribe(self, q: asyncio.Queue):
+        try:
+            self.subscribers.remove(q)
+        except ValueError:
+            pass
+
+    async def _pump(self):
+        cmd = _build_ffmpeg_cmd(self.song, self.semitones)
+        label = f"{self.song_id}+{self.semitones:+d}st" if self.semitones else self.song_id
+        log.info(f"[{label}] ffmpeg start: {shlex.join(cmd)}")
+        try:
+            self._process = await asyncio.create_subprocess_exec(
+                *cmd, stdout=PIPE, stderr=DEVNULL
+            )
+            while True:
+                chunk = await self._process.stdout.read(settings.stream_chunk_size)
+                if not chunk:
+                    break
+                # Distribute to all subscribers; drop slow ones to avoid backpressure
+                for q in list(self.subscribers):
+                    try:
+                        q.put_nowait(chunk)
+                    except asyncio.QueueFull:
+                        log.warning(f"[{label}] subscriber queue full, dropping chunk")
+            await self._process.wait()
+            log.info(f"[{label}] ffmpeg exited with code {self._process.returncode}")
+        except Exception as e:
+            log.error(f"[{self.song_id}] ffmpeg pump error: {e}")
+        finally:
+            self.done = True
+            # Send sentinel None to all subscribers so their generators terminate
+            for q in list(self.subscribers):
+                try:
+                    q.put_nowait(None)
+                except asyncio.QueueFull:
+                    pass
+
+    def start(self):
+        self._task = asyncio.create_task(self._pump())
+
+    async def stop(self):
+        if self._process and self._process.returncode is None:
+            self._process.terminate()
+            try:
+                await asyncio.wait_for(self._process.wait(), timeout=5.0)
+            except asyncio.TimeoutError:
+                self._process.kill()
+        if self._task:
+            await asyncio.shield(self._task)
+
+
+class StreamManager:
+    def __init__(self):
+        # Keyed by (song_id, semitones) so each pitch offset gets its own broadcaster
+        self._active: dict[tuple[str, int], StreamBroadcaster] = {}
+
+    def start_stream(self, song: dict, semitones: int = 0) -> StreamBroadcaster:
+        """Start (or return existing) broadcaster for this song+semitones pair."""
+        key = (song["id"], semitones)
+        if key in self._active:
+            asyncio.create_task(self._active[key].stop())
+
+        broadcaster = StreamBroadcaster(song_id=song["id"], song=song, semitones=semitones)
+        broadcaster.start()
+        self._active[key] = broadcaster
+        return broadcaster
+
+    def get_or_start_stream(self, song: dict, semitones: int = 0) -> StreamBroadcaster:
+        """Return existing broadcaster or start a new one on demand."""
+        key = (song["id"], semitones)
+        if key not in self._active or self._active[key].done:
+            return self.start_stream(song, semitones)
+        return self._active[key]
+
+    def get_broadcaster(self, song_id: str, semitones: int = 0) -> Optional[StreamBroadcaster]:
+        return self._active.get((song_id, semitones))
+
+    async def stop_all_for_song(self, song_id: str):
+        """Stop every semitone variant for a given song (called when queue advances)."""
+        keys = [k for k in self._active if k[0] == song_id]
+        for key in keys:
+            await self._active.pop(key).stop()
+
+    async def shutdown(self):
+        for bc in list(self._active.values()):
+            await bc.stop()
+        self._active.clear()
+
+
+stream_manager = StreamManager()
