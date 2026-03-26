@@ -156,9 +156,12 @@
               <th class="px-3 py-2.5 w-16"></th>
             </tr>
           </thead>
-          <tbody class="divide-y divide-gray-100 dark:divide-gray-800/60">
+          <tbody>
             <template x-for="(s, i) in songs" :key="s.id">
-              <tr class="hover:bg-gray-50 dark:hover:bg-gray-900/40 transition-colors group">
+              <tr :class="i % 2 === 0
+                ? 'bg-white dark:bg-gray-950 hover:bg-brand-50 dark:hover:bg-gray-900/60'
+                : 'bg-gray-50 dark:bg-gray-900/40 hover:bg-brand-50 dark:hover:bg-gray-900/60'"
+                class="transition-colors group">
                 <td class="px-3 py-2.5 text-xs text-gray-400 tabular-nums"
                     x-text="page * 50 + i + 1"></td>
                 <td class="px-3 py-2.5">
