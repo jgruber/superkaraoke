@@ -232,6 +232,79 @@ sudo journalctl -u superkaraoke -f
 
 ---
 
+## Docker
+
+### Build and run with Docker
+
+```bash
+# Build the image (frontend is compiled inside the build stage)
+docker build -t superkaraoke .
+
+# Run, mounting your karaoke directory and a volume for the database
+docker run -d \
+  --name superkaraoke \
+  -p 8080:8080 \
+  -v /path/to/your/karaoke:/media/karaoke:ro \
+  -v superkaraoke_data:/data \
+  --restart unless-stopped \
+  superkaraoke
+```
+
+Open `http://localhost:8080`.
+
+### Docker Compose
+
+Copy `docker-compose.yml` from the repo and edit the media path:
+
+```yaml
+services:
+  superkaraoke:
+    build: .
+    ports:
+      - "8080:8080"
+    volumes:
+      - /path/to/your/karaoke:/media/karaoke:ro  # ← change this
+      - superkaraoke_data:/data
+    environment:
+      SK_MEDIA_DIR: /media/karaoke
+      SK_DB_PATH: /data/superkaraoke.db
+    restart: unless-stopped
+
+volumes:
+  superkaraoke_data:
+```
+
+Then:
+
+```bash
+docker compose up -d          # start in background
+docker compose logs -f        # follow logs
+docker compose down           # stop
+docker compose pull && docker compose up -d   # update to latest image
+```
+
+### Volume reference
+
+| Mount point | Purpose |
+|---|---|
+| `/media/karaoke` | Karaoke media files (CDG+MP3 pairs, video files). Mount read-only if you don't want the container writing to your library. |
+| `/data` | SQLite database (`superkaraoke.db`). Use a named volume or bind-mount a directory here so the library and like counts survive container restarts and image updates. |
+
+### Environment variables in Docker
+
+Pass any `SK_*` variable via `-e` or the `environment:` block in Compose:
+
+```bash
+docker run -d \
+  -p 8080:8080 \
+  -v /mnt/nas/karaoke:/media/karaoke:ro \
+  -v superkaraoke_data:/data \
+  -e SK_FFMPEG_LOGLEVEL=info \
+  superkaraoke
+```
+
+---
+
 ## Architecture notes
 
 ### Single-port streaming

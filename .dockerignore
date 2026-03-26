@@ -1,0 +1,22 @@
+# Python runtime artifacts
+.venv/
+__pycache__/
+*.py[cod]
+*.db
+*.db-shm
+*.db-wal
+
+# Frontend source dependencies and build output
+# (the Dockerfile builds the frontend inside the container)
+frontend/node_modules/
+frontend/dist/
+
+# Git and tooling
+.git/
+.claude/
+.env
+*.md
+
+# OS
+.DS_Store
+Thumbs.db

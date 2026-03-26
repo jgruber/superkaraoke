@@ -1,0 +1,25 @@
+services:
+  superkaraoke:
+    build: .
+    # Or pull a pre-built image:
+    # image: ghcr.io/jgruber/superkaraoke:latest
+    ports:
+      - "8080:8080"
+    volumes:
+      # Bind-mount your karaoke media directory (read-only)
+      - /path/to/your/karaoke:/media/karaoke:ro
+      # Named volume for the SQLite database (persists between container restarts)
+      - superkaraoke_data:/data
+    environment:
+      SK_MEDIA_DIR: /media/karaoke
+      SK_DB_PATH: /data/superkaraoke.db
+    restart: unless-stopped
+    # Optional: limit CPU to prevent ffmpeg from starving other containers
+    # deploy:
+    #   resources:
+    #     limits:
+    #       cpus: "2.0"
+
+volumes:
+  # Docker-managed volume for the library database
+  superkaraoke_data:
