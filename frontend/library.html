@@ -367,7 +367,7 @@
             <p x-show="mbError" class="text-xs text-red-500 dark:text-red-400" x-text="mbError"></p>
 
             <!-- Results -->
-            <div x-show="mbResults.length > 0" class="flex flex-col gap-1.5 max-h-56 overflow-y-auto pr-1">
+            <div x-show="mbResults.length > 0" class="flex flex-col gap-1.5 max-h-48 overflow-y-scroll overscroll-contain pr-1 border border-gray-100 dark:border-gray-800 rounded-lg p-1">
               <template x-for="r in mbResults" :key="r.mb_id">
                 <button
                   @click="applyMbResult(r)"
