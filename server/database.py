@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS songs (
     genre            TEXT NOT NULL DEFAULT '',
     likes            INTEGER NOT NULL DEFAULT 0,
     metadata_locked  INTEGER NOT NULL DEFAULT 0,
+    is_duplicate     INTEGER NOT NULL DEFAULT 0,
     added_at         TEXT NOT NULL DEFAULT (datetime('now')),
     scanned_at       TEXT
 );
@@ -56,6 +57,13 @@ async def init_db():
             WHERE id IN (SELECT song_id FROM song_likes)
               AND metadata_locked = 0
         """)
+        # Add is_duplicate column to existing databases that predate it
+        try:
+            await db.execute(
+                "ALTER TABLE songs ADD COLUMN is_duplicate INTEGER NOT NULL DEFAULT 0"
+            )
+        except Exception:
+            pass  # column already exists
         await db.commit()
 
 
@@ -181,6 +189,7 @@ async def search_songs(
     limit: int = 50,
     offset: int = 0,
     kind_filter: str = "",
+    include_duplicates: bool = True,
 ) -> tuple[list[dict], int]:
     q = f"%{query}%" if query else "%"
 
@@ -190,6 +199,9 @@ async def search_songs(
     if kind_filter in ("cdg", "video"):
         conditions.append("kind = ?")
         base_params.append(kind_filter)
+
+    if not include_duplicates:
+        conditions.append("is_duplicate = 0")
 
     where = " AND ".join(conditions)
     order = {
@@ -231,7 +243,8 @@ async def get_library_stats() -> dict:
                 COALESCE(SUM(kind = 'cdg'), 0) AS cdg_count,
                 COALESCE(SUM(kind = 'video'), 0) AS video_count,
                 COALESCE(SUM(artist = ''), 0) AS no_artist,
-                COALESCE(SUM(likes > 0), 0) AS liked
+                COALESCE(SUM(likes > 0), 0) AS liked,
+                COALESCE(SUM(is_duplicate = 1), 0) AS duplicate_count
             FROM songs
         """) as cur:
             row = await cur.fetchone()
@@ -243,7 +256,7 @@ async def update_song_metadata(song_id: str, fields: dict) -> Optional[dict]:
     Update user-editable metadata fields.
     Automatically sets metadata_locked = 1 to protect against rescan overwrites.
     """
-    allowed = {"title", "artist", "year", "genre", "likes", "metadata_locked"}
+    allowed = {"title", "artist", "year", "genre", "likes", "metadata_locked", "is_duplicate"}
     updates = {k: v for k, v in fields.items() if k in allowed}
     if not updates:
         return await get_song(song_id)
@@ -298,6 +311,13 @@ async def increment_like(song_id: str, delta: int = 1) -> int:
         ) as cur:
             row = await cur.fetchone()
     return row[0] if row else 0
+
+
+async def delete_song(song_id: str):
+    """Remove a song from the DB entirely (does not touch the file on disk)."""
+    async with aiosqlite.connect(_DB) as db:
+        await db.execute("DELETE FROM songs WHERE id = ?", (song_id,))
+        await db.commit()
 
 
 async def remove_missing_songs(valid_ids: set[str]):

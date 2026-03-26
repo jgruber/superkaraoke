@@ -29,6 +29,8 @@ function initLibrary() {
     song: null,       // working copy being edited
     saving: false,
     redetecting: false,
+    deleteConfirm: false,
+    deleting: false,
 
     // MusicBrainz panel (inside modal)
     mbOpen: false,
@@ -125,6 +127,7 @@ function initLibrary() {
       this.mbError = null
       this.mbTitle  = s.title
       this.mbArtist = s.artist
+      this.deleteConfirm = false
       this.modal = true
       this.$nextTick(() => this.$refs.titleInput?.focus())
     },
@@ -132,6 +135,25 @@ function initLibrary() {
     closeModal() {
       this.modal = false
       this.song = null
+      this.deleteConfirm = false
+    },
+
+    async deleteSong() {
+      if (!this.song) return
+      this.deleting = true
+      try {
+        const r = await fetch(`/api/library/${this.song.id}`, { method: 'DELETE' })
+        if (!r.ok) throw new Error()
+        this.songs = this.songs.filter(s => s.id !== this.song.id)
+        this.total = Math.max(0, this.total - 1)
+        this.showToast(`"${this.song.title}" removed from library`)
+        this.closeModal()
+        this.fetchStats()
+      } catch {
+        this.showToast('Delete failed', 'error')
+      } finally {
+        this.deleting = false
+      }
     },
 
     async save() {
@@ -142,11 +164,12 @@ function initLibrary() {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            title:  this.song.title,
-            artist: this.song.artist,
-            year:   this.song.year   ? Number(this.song.year)  : null,
-            genre:  this.song.genre,
-            likes:  this.song.likes  ? Number(this.song.likes) : 0,
+            title:        this.song.title,
+            artist:       this.song.artist,
+            year:         this.song.year   ? Number(this.song.year)  : null,
+            genre:        this.song.genre,
+            likes:        this.song.likes  ? Number(this.song.likes) : 0,
+            is_duplicate: this.song.is_duplicate ? 1 : 0,
           }),
         })
         if (!r.ok) throw new Error()

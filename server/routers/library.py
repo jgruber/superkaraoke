@@ -15,7 +15,7 @@ from typing import Optional
 from ..library import library
 from ..database import (
     get_song, update_song_metadata, redetect_song_metadata,
-    get_library_stats, search_songs,
+    get_library_stats, search_songs, delete_song,
 )
 from ..metadata import extract_metadata, search_musicbrainz
 
@@ -52,6 +52,7 @@ class MetadataUpdate(BaseModel):
     genre:  Optional[str] = None
     likes:  Optional[int] = None
     metadata_locked: Optional[int] = None
+    is_duplicate:    Optional[int] = None
 
 
 @router.patch("/library/{song_id}")
@@ -62,6 +63,14 @@ async def update_metadata(song_id: str, body: MetadataUpdate):
     fields = {k: v for k, v in body.model_dump().items() if v is not None}
     updated = await update_song_metadata(song_id, fields)
     return updated
+
+
+@router.delete("/library/{song_id}")
+async def remove_song(song_id: str):
+    if not await get_song(song_id):
+        raise HTTPException(status_code=404, detail="Song not found")
+    await delete_song(song_id)
+    return {"deleted": song_id}
 
 
 # ── Re-detect from file ────────────────────────────────────────────────────────

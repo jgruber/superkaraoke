@@ -178,7 +178,8 @@ class Library:
         kind_filter: str = "",
     ) -> tuple[list[dict], int]:
         return await search_songs(
-            query=query, sort=sort, limit=limit, offset=offset, kind_filter=kind_filter
+            query=query, sort=sort, limit=limit, offset=offset,
+            kind_filter=kind_filter, include_duplicates=False,
         )
 
     @property

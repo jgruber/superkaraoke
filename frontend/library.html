@@ -167,6 +167,10 @@
                   <span x-show="s.metadata_locked"
                     class="ml-1.5 badge bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400"
                     title="Metadata locked">🔒</span>
+                  <!-- duplicate badge -->
+                  <span x-show="s.is_duplicate"
+                    class="ml-1.5 badge bg-amber-100 dark:bg-amber-950 text-amber-600 dark:text-amber-400"
+                    title="Marked as duplicate — hidden from queue search">Duplicate</span>
                   <!-- mobile: artist under title -->
                   <p class="text-xs text-gray-500 dark:text-gray-400 mt-0.5 md:hidden"
                     x-text="s.artist || 'Unknown artist'"></p>
@@ -291,6 +295,13 @@
               Lock metadata (don't overwrite on rescan)
             </label>
           </div>
+          <div class="flex items-center gap-2">
+            <input id="is-duplicate" x-model="song.is_duplicate" type="checkbox"
+              class="w-4 h-4 rounded border-gray-300 text-amber-500 focus:ring-amber-400 dark:border-gray-600 dark:bg-gray-800" />
+            <label for="is-duplicate" class="text-sm text-gray-700 dark:text-gray-300 cursor-pointer select-none">
+              Mark as duplicate (hide from queue search)
+            </label>
+          </div>
         </div>
 
         <!-- File paths (read-only) -->
@@ -374,9 +385,48 @@
 
       <!-- Modal footer -->
       <div class="px-5 py-4 border-t border-gray-200 dark:border-gray-800 flex gap-2 shrink-0">
+        <button @click="deleteConfirm = true"
+          class="btn-ghost text-red-500 hover:text-red-700 dark:text-red-400 dark:hover:text-red-300 px-3">
+          🗑
+        </button>
         <button @click="closeModal()" class="btn-ghost flex-1">Cancel</button>
         <button @click="save()" :disabled="saving" class="btn-primary flex-1">
           <span x-text="saving ? 'Saving…' : 'Save Changes'"></span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Delete confirmation modal ────────────────────────────────────────── -->
+  <div
+    x-show="deleteConfirm"
+    x-transition:enter="transition-opacity duration-150"
+    x-transition:enter-start="opacity-0"
+    x-transition:enter-end="opacity-100"
+    x-transition:leave="transition-opacity duration-100"
+    x-transition:leave-start="opacity-100"
+    x-transition:leave-end="opacity-0"
+    class="fixed inset-0 z-60 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
+    @click.self="deleteConfirm = false"
+  >
+    <div
+      class="card w-full max-w-sm p-6 shadow-2xl"
+      x-transition:enter="transition duration-150"
+      x-transition:enter-start="opacity-0 scale-95"
+      x-transition:enter-end="opacity-100 scale-100"
+    >
+      <h3 class="font-semibold text-base mb-1">Remove from library?</h3>
+      <p class="text-sm text-gray-500 dark:text-gray-400 mb-1">
+        "<span class="font-medium text-gray-700 dark:text-gray-300" x-text="song?.title"></span>"
+      </p>
+      <p class="text-xs text-gray-400 dark:text-gray-500 mb-5">
+        This removes the entry from the database. The file on disk is not deleted.
+      </p>
+      <div class="flex gap-2">
+        <button @click="deleteConfirm = false" class="btn-ghost flex-1">Cancel</button>
+        <button @click="deleteSong()" :disabled="deleting"
+          class="flex-1 px-4 py-2 rounded-xl font-medium text-sm bg-red-600 hover:bg-red-700 text-white transition-colors disabled:opacity-50">
+          <span x-text="deleting ? 'Removing…' : 'Yes, remove it'"></span>
         </button>
       </div>
     </div>
