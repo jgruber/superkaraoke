@@ -253,7 +253,7 @@ function initApp() {
         const res = await fetch('/api/youtube/download', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ url: video.url, title: video.title }),
+          body: JSON.stringify({ url: video.url, title: video.title, channel: video.channel }),
         })
         if (!res.ok) throw new Error()
         const { job_id } = await res.json()

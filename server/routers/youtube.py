@@ -73,6 +73,7 @@ def _do_search(query: str) -> list[dict]:
 class DownloadRequest(BaseModel):
     url: str
     title: str
+    channel: str = ""
 
 
 @router.post("/youtube/download")
@@ -87,10 +88,11 @@ async def start_download(body: DownloadRequest, background_tasks: BackgroundTask
         "status": "pending",
         "progress": 0,
         "title": body.title,
+        "channel": body.channel,
         "filename": None,
         "error": None,
     }
-    background_tasks.add_task(_run_download, job_id, body.url)
+    background_tasks.add_task(_run_download, job_id, body.url, body.channel)
     return {"job_id": job_id}
 
 
@@ -105,6 +107,7 @@ async def download_status(job_id: str):
 # ── Internal download logic ─────────────────────────────────────────────────────
 
 def _make_progress_hook(job_id: str):
+    """Update download percentage while bytes are transferring."""
     def hook(d: dict):
         job = _jobs.get(job_id)
         if job is None:
@@ -115,33 +118,61 @@ def _make_progress_hook(job_id: str):
             job["progress"] = int(downloaded / total * 100) if total else 0
             job["status"] = "downloading"
         elif d["status"] == "finished":
-            job["progress"] = 99          # ffmpeg merge may still run
+            job["progress"] = 99   # ffmpeg merge may still be running
             job["status"] = "processing"
-            job["filename"] = d.get("filename", "")
     return hook
 
 
-async def _run_download(job_id: str, url: str):
+def _make_postprocessor_hook(job_id: str):
+    """Capture the final merged filename after ffmpeg is done."""
+    def hook(d: dict):
+        job = _jobs.get(job_id)
+        if job is None:
+            return
+        if d.get("status") == "finished":
+            info = d.get("info_dict", {})
+            # filepath is the final output path after postprocessing
+            final = (
+                d.get("filepath")
+                or info.get("filepath")
+                or info.get("filename")
+                or ""
+            )
+            if final:
+                job["filename"] = str(final)
+    return hook
+
+
+async def _run_download(job_id: str, url: str, channel: str):
     job = _jobs[job_id]
     try:
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, _do_download, job_id, url)
         job["status"] = "done"
         job["progress"] = 100
-        # Rescan so the new file is indexed, then resolve its song_id
+
+        # Rescan so the new file is indexed
         from ..library import library
-        from ..database import search_songs
+        from ..library import _song_id
+        from ..database import get_song, update_song_metadata
         await library.scan()
-        filename = job.get("filename", "")
+
+        # Resolve song_id from the known file path (reliable — no title search)
+        filename = job.get("filename") or ""
         if filename:
-            results, _ = await search_songs(
-                query=Path(filename).stem, limit=5, include_duplicates=True
-            )
-            # Match by file path — the downloaded file lands in DOWNLOADS_DIR
-            for s in results:
-                if Path(s.get("file_path", "")).stem == Path(filename).stem:
-                    job["song_id"] = s["id"]
-                    break
+            sid = _song_id(Path(filename))
+            song = await get_song(sid)
+            if song:
+                job["song_id"] = sid
+                # If the scan left artist blank, fill it from the YouTube channel
+                if not song.get("artist") and channel:
+                    await update_song_metadata(sid, {"artist": channel, "metadata_locked": 0})
+                    log.info("Set artist='%s' for downloaded song %s", channel, sid)
+            else:
+                log.warning("Downloaded file not found in DB after scan: %s", filename)
+        else:
+            log.warning("No final filename recorded for job %s", job_id)
+
     except Exception as exc:
         log.error("Download failed for job %s: %s", job_id, exc)
         job["status"] = "error"
@@ -156,6 +187,7 @@ def _do_download(job_id: str, url: str):
         "outtmpl": str(DOWNLOADS_DIR / "%(title)s.%(ext)s"),
         "merge_output_format": "mp4",
         "progress_hooks": [_make_progress_hook(job_id)],
+        "postprocessor_hooks": [_make_postprocessor_hook(job_id)],
         "quiet": True,
         "no_warnings": True,
         "noplaylist": True,
