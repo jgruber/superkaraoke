@@ -94,13 +94,25 @@ def read_file_tags(file_path: str) -> dict:
         return {}
 
 
-def extract_metadata(file_path: str, cdg_path: Optional[str], kind: str) -> dict:
+def extract_metadata(file_path: str, cdg_path: Optional[str], kind: str,
+                     read_tags: bool = True) -> dict:
     """
     Best-effort metadata for a song file.
-    Falls back from file tags → filename parsing.
+
+    For CDG+MP3 pairs (kind='cdg'), file tags are skipped by default:
+    the 'Artist - Title' filename convention is reliable and avoids slow
+    network reads on NAS-mounted libraries.  Pass read_tags=True to force
+    a mutagen read (e.g. from the library 're-detect' action).
+
+    For video files, mutagen is always attempted since filenames are less
+    structured and MP4/MKV containers often carry good embedded metadata.
     """
-    tags = read_file_tags(file_path)
     parsed = parse_filename(Path(file_path).stem)
+
+    if kind == "video" or read_tags:
+        tags = read_file_tags(file_path)
+    else:
+        tags = {}
 
     return {
         'title':  tags.get('title')  or parsed.get('title')  or Path(file_path).stem,

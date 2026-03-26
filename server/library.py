@@ -3,11 +3,19 @@ Karaoke library: syncs filesystem → SQLite on startup and on file changes.
 
 The database is the source of truth for all song metadata.
 This module owns the scan loop and file watcher.
+
+Scan strategy (fast for large libraries):
+  1. Load all existing song IDs from DB at scan start.
+  2. For known files: update file paths only — no mutagen read.
+  3. For new files: read tags/filename in parallel via a thread pool.
+  4. Remove DB entries whose files no longer exist on disk.
 """
 import asyncio
 import hashlib
 import logging
+import os
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Optional
 
@@ -16,7 +24,8 @@ from watchdog.observers import Observer
 
 from .config import settings
 from .database import (
-    upsert_song, get_song, search_songs, count_songs, remove_missing_songs,
+    upsert_song, bulk_upsert_songs, touch_song_paths, get_song, search_songs,
+    count_songs, remove_missing_songs, get_all_song_ids,
 )
 from .metadata import extract_metadata
 
@@ -25,6 +34,10 @@ log = logging.getLogger(__name__)
 VIDEO_EXTS = set(settings.supported_video_extensions)
 AUDIO_EXTS = set(settings.supported_audio_extensions)
 CDG_EXTS   = set(settings.supported_cdg_extensions)
+
+# Thread pool for parallel mutagen reads on first-scan new files
+_SCAN_WORKERS = min(16, (os.cpu_count() or 4) * 2)
+_executor = ThreadPoolExecutor(max_workers=_SCAN_WORKERS, thread_name_prefix="scan")
 
 
 def _song_id(path: Path) -> str:
@@ -36,35 +49,50 @@ def _song_id(path: Path) -> str:
 class Library:
     def __init__(self):
         self._song_count: int = 0
+        self._scanning: bool = False
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._observer: Optional[Observer] = None
         self._debounce_timer: Optional[threading.Timer] = None
 
     # ── Scanning ──────────────────────────────────────────────────────────────
 
-    async def scan(self, overwrite_metadata: bool = False):
-        """
-        Walk media_dir, upsert every found song into the DB, then remove
-        DB entries for files that no longer exist.
-
-        overwrite_metadata=True is only used when the user explicitly
-        triggers a forced re-detect from the library management UI.
-        """
+    async def scan(self):
+        if self._scanning:
+            log.debug("Scan already in progress, skipping")
+            return
+        self._scanning = True
         self._loop = asyncio.get_running_loop()
-        media_dir = settings.media_dir
+        try:
+            await self._do_scan()
+        finally:
+            self._scanning = False
 
+    async def _do_scan(self):
+        media_dir = settings.media_dir
         if not media_dir.exists():
             log.warning("Media dir does not exist: %s", media_dir)
             self._song_count = 0
             return
 
+        # Snapshot of what's already indexed — used to skip mutagen reads
+        existing_ids = await get_all_song_ids()
         found_ids: set[str] = set()
 
-        # Group files by directory so CDG pairing is per-directory
+        # Walk filesystem, grouping files by directory for CDG pairing
         by_dir: dict[Path, list[Path]] = {}
-        for p in media_dir.rglob("*"):
-            if p.is_file():
-                by_dir.setdefault(p.parent, []).append(p)
+        for dirpath, _dirnames, filenames in os.walk(
+            media_dir,
+            onerror=lambda e: log.debug("Skipping inaccessible path: %s", e),
+        ):
+            for name in filenames:
+                by_dir.setdefault(Path(dirpath), []).append(Path(dirpath) / name)
+
+        log.info("Scan started: %d directories, %d existing DB entries",
+                 len(by_dir), len(existing_ids))
+
+        # Separate files into known (fast path) and new (need metadata read)
+        known:    list[tuple[str, str, Optional[str], str]] = []  # (sid, file, cdg, kind)
+        new_files: list[tuple[str, str, Optional[str], str]] = []
 
         for files in by_dir.values():
             cdg_map = {
@@ -81,39 +109,60 @@ class Library:
                     if not cdg:
                         continue
                     sid = _song_id(f)
-                    meta = await asyncio.to_thread(
-                        extract_metadata, str(f), str(cdg), "cdg"
-                    )
-                    song_data = {
-                        "id": sid,
-                        "file_path": str(f),
-                        "cdg_path": str(cdg),
-                        "kind": "cdg",
-                        **meta,
-                    }
+                    entry = (sid, str(f), str(cdg), "cdg")
 
                 elif ext in VIDEO_EXTS:
                     sid = _song_id(f)
-                    meta = await asyncio.to_thread(
-                        extract_metadata, str(f), None, "video"
-                    )
-                    song_data = {
-                        "id": sid,
-                        "file_path": str(f),
-                        "cdg_path": None,
-                        "kind": "video",
-                        **meta,
-                    }
+                    entry = (sid, str(f), None, "video")
 
                 else:
                     continue
 
-                await upsert_song(song_data)
-                found_ids.add(song_data["id"])
+                found_ids.add(entry[0])
+                if entry[0] in existing_ids:
+                    known.append(entry)
+                else:
+                    new_files.append(entry)
+
+        log.info("Scan: %d known (path update only), %d new (reading metadata)",
+                 len(known), len(new_files))
+
+        # Fast path: bulk-update file paths for known songs
+        for sid, file_path, cdg_path, kind in known:
+            await touch_song_paths(sid, file_path, cdg_path, kind)
+
+        # Slow path: read metadata for new files in parallel, bulk-insert in batches
+        if new_files:
+            loop = asyncio.get_running_loop()
+            chunk = 500
+
+            for i in range(0, len(new_files), chunk):
+                batch = new_files[i:i + chunk]
+
+                # Parallel metadata reads via thread pool
+                # CDG files: skip mutagen (filename parsing only — avoids slow NAS reads)
+                # Video files: read embedded tags (filenames are less structured)
+                metas = await asyncio.gather(*[
+                    loop.run_in_executor(
+                        _executor, extract_metadata, fp, cdg, kind,
+                        kind == "video",   # read_tags
+                    )
+                    for _, fp, cdg, kind in batch
+                ])
+
+                songs_batch = [
+                    {"id": sid, "file_path": fp, "cdg_path": cdg, "kind": kind, **meta}
+                    for (sid, fp, cdg, kind), meta in zip(batch, metas)
+                ]
+
+                # Single transaction for the whole chunk
+                await bulk_upsert_songs(songs_batch)
+                log.info("Scan progress: %d / %d new files",
+                         min(i + chunk, len(new_files)), len(new_files))
 
         await remove_missing_songs(found_ids)
         self._song_count = await count_songs()
-        log.info("Scan complete: %d songs in %s", self._song_count, media_dir)
+        log.info("Scan complete: %d songs", self._song_count)
 
     # ── Lookup API ────────────────────────────────────────────────────────────
 

@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -20,10 +21,14 @@ log = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
-    await library.scan()
+    # Seed count from DB immediately (may be 0 on first run)
+    from .database import count_songs
+    library._song_count = await count_songs()
     library.start_watcher()
     queue_manager.start_loop()
-    log.info("Library: %d songs in %s", library.songs, settings.media_dir)
+    # Run scan in background — server is available while library indexes
+    asyncio.create_task(library.scan())
+    log.info("Server ready. Library scan running in background (%s)", settings.media_dir)
     yield
     library.stop_watcher()
     await stream_manager.shutdown()

@@ -47,6 +47,7 @@ CREATE TABLE IF NOT EXISTS song_likes (
 
 async def init_db():
     async with aiosqlite.connect(_DB) as db:
+        await db.execute("PRAGMA journal_mode=WAL")
         await db.executescript(_DDL)
         # Migrate likes from legacy table into songs (if songs table was just created)
         await db.execute("""
@@ -115,6 +116,55 @@ async def upsert_song(data: dict) -> dict:
         async with db.execute("SELECT * FROM songs WHERE id = ?", (sid,)) as cur:
             row = await cur.fetchone()
         return _row_to_song(row)
+
+
+async def get_all_song_ids() -> set[str]:
+    """Return the set of all song IDs currently in the DB (for scan diffing)."""
+    async with aiosqlite.connect(_DB) as db:
+        async with db.execute("SELECT id FROM songs") as cur:
+            rows = await cur.fetchall()
+    return {row[0] for row in rows}
+
+
+async def touch_song_paths(song_id: str, file_path: str, cdg_path: Optional[str], kind: str):
+    """Fast update for known songs: refresh file paths only, no metadata read needed."""
+    async with aiosqlite.connect(_DB) as db:
+        await db.execute("""
+            UPDATE songs
+            SET file_path = ?, cdg_path = ?, kind = ?, scanned_at = datetime('now')
+            WHERE id = ?
+        """, (file_path, cdg_path, kind, song_id))
+        await db.commit()
+
+
+async def bulk_upsert_songs(songs: list[dict]):
+    """
+    Insert many new songs in a single transaction.
+    Skips any song_id that already exists (existing songs go through touch_song_paths).
+    """
+    if not songs:
+        return
+    async with aiosqlite.connect(_DB) as db:
+        # Enable WAL for concurrent read access during bulk write
+        await db.execute("PRAGMA journal_mode=WAL")
+        await db.executemany("""
+            INSERT OR IGNORE INTO songs
+                (id, file_path, cdg_path, kind, title, artist, year, genre, likes, scanned_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, datetime('now'))
+        """, [
+            (
+                s["id"],
+                s["file_path"],
+                s.get("cdg_path"),
+                s["kind"],
+                s.get("title", ""),
+                s.get("artist", ""),
+                s.get("year"),
+                s.get("genre", ""),
+            )
+            for s in songs
+        ])
+        await db.commit()
 
 
 async def get_song(song_id: str) -> Optional[dict]:
