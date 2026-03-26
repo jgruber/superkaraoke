@@ -98,16 +98,23 @@
         </div>
 
         <!-- Results count -->
-        <div class="flex items-center justify-between text-sm text-gray-500 dark:text-gray-400">
+        <div x-show="query" class="flex items-center justify-between text-sm text-gray-500 dark:text-gray-400">
           <span>
             <span x-text="total"></span> song<span x-show="total !== 1">s</span>
-            <span x-show="query"> matching "<span x-text="query"></span>"</span>
+            matching "<span x-text="query"></span>"
           </span>
           <span x-show="loading" class="text-brand-500 animate-pulse">Loading…</span>
         </div>
 
+        <!-- Prompt when no search -->
+        <div x-show="!query" class="py-16 text-center text-gray-400 dark:text-gray-600">
+          <p class="text-4xl mb-3">🎤</p>
+          <p class="font-medium text-gray-500 dark:text-gray-400">Search for a song to get started</p>
+          <p class="text-sm mt-1">Type a title or artist name above</p>
+        </div>
+
         <!-- Song cards grid -->
-        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div x-show="query" class="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <template x-for="song in songs" :key="song.id">
             <div
               class="card p-3 flex items-center gap-3 group hover:border-brand-300 dark:hover:border-brand-700 transition-colors cursor-pointer"
@@ -150,8 +157,7 @@
             <div class="sm:col-span-2 py-16 text-center text-gray-400 dark:text-gray-600">
               <p class="text-4xl mb-3">🎵</p>
               <p class="font-medium">No songs found</p>
-              <p class="text-sm mt-1" x-show="query">Try a different search term</p>
-              <p class="text-sm mt-1" x-show="!query">Add karaoke files to your media directory and restart</p>
+              <p class="text-sm mt-1">Try a different search term</p>
             </div>
           </template>
         </div>

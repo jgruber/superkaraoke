@@ -42,7 +42,6 @@ function initApp() {
         (!localStorage.getItem('sk-theme') && window.matchMedia('(prefers-color-scheme: dark)').matches)
       this._applyTheme()
       this._connectWS()
-      this.fetchSongs()
     },
 
     // ── Theme ──────────────────────────────────────────────────────────────
@@ -164,6 +163,10 @@ function initApp() {
         if (!res.ok) throw new Error()
         this.showToast(`"${this.modal.title}" added to queue`)
         this.closeModal()
+        this.query = ''
+        this.songs = []
+        this.total = 0
+        this.page = 0
       } catch {
         this.showToast('Failed to add song', 'error')
       }
