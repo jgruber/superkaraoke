@@ -202,6 +202,7 @@ async def search_songs(
 
     if not include_duplicates:
         conditions.append("is_duplicate = 0")
+        conditions.append("artist != ''")
 
     where = " AND ".join(conditions)
     order = {
