@@ -43,26 +43,38 @@
   <main class="flex-1 max-w-7xl mx-auto w-full px-4 py-6 flex flex-col gap-5">
 
     <!-- ── Stats bar ──────────────────────────────────────────────────────── -->
-    <div class="grid grid-cols-2 sm:grid-cols-5 gap-3">
-      <div class="card p-3 text-center">
-        <p class="text-2xl font-bold" x-text="stats.total ?? 0"></p>
-        <p class="text-xs text-gray-500 dark:text-gray-400 mt-0.5">Total songs</p>
+    <div class="card px-4 py-3 flex flex-wrap items-center gap-x-6 gap-y-2">
+      <!-- Total -->
+      <div class="flex items-center gap-2">
+        <span class="text-gray-400 dark:text-gray-500 text-base">🎵</span>
+        <span class="font-bold" x-text="stats.total ?? 0"></span>
+        <span class="text-xs text-gray-500 dark:text-gray-400">songs</span>
       </div>
-      <div class="card p-3 text-center">
-        <p class="text-2xl font-bold text-purple-600 dark:text-purple-400" x-text="stats.cdg_count ?? 0"></p>
-        <p class="text-xs text-gray-500 dark:text-gray-400 mt-0.5">CDG+MP3</p>
+      <div class="w-px h-4 bg-gray-200 dark:bg-gray-700 hidden sm:block"></div>
+      <!-- CDG -->
+      <div class="flex items-center gap-2">
+        <span class="text-base">🎤</span>
+        <span class="font-bold text-purple-600 dark:text-purple-400" x-text="stats.cdg_count ?? 0"></span>
+        <span class="text-xs text-gray-500 dark:text-gray-400">CDG+MP3</span>
       </div>
-      <div class="card p-3 text-center">
-        <p class="text-2xl font-bold text-blue-600 dark:text-blue-400" x-text="stats.video_count ?? 0"></p>
-        <p class="text-xs text-gray-500 dark:text-gray-400 mt-0.5">Video</p>
+      <!-- Video -->
+      <div class="flex items-center gap-2">
+        <span class="text-base">🎬</span>
+        <span class="font-bold text-blue-600 dark:text-blue-400" x-text="stats.video_count ?? 0"></span>
+        <span class="text-xs text-gray-500 dark:text-gray-400">Video</span>
       </div>
-      <div class="card p-3 text-center">
-        <p class="text-2xl font-bold text-amber-600 dark:text-amber-400" x-text="stats.no_artist ?? 0"></p>
-        <p class="text-xs text-gray-500 dark:text-gray-400 mt-0.5">Missing artist</p>
+      <div class="w-px h-4 bg-gray-200 dark:bg-gray-700 hidden sm:block"></div>
+      <!-- Missing artist -->
+      <div class="flex items-center gap-2">
+        <span class="text-base">⚠️</span>
+        <span class="font-bold text-amber-600 dark:text-amber-400" x-text="stats.no_artist ?? 0"></span>
+        <span class="text-xs text-gray-500 dark:text-gray-400">missing artist</span>
       </div>
-      <div class="card p-3 text-center">
-        <p class="text-2xl font-bold text-pink-600 dark:text-pink-400" x-text="stats.liked ?? 0"></p>
-        <p class="text-xs text-gray-500 dark:text-gray-400 mt-0.5">Liked songs</p>
+      <!-- Liked -->
+      <div class="flex items-center gap-2">
+        <span class="text-base">♥</span>
+        <span class="font-bold text-pink-600 dark:text-pink-400" x-text="stats.liked ?? 0"></span>
+        <span class="text-xs text-gray-500 dark:text-gray-400">liked</span>
       </div>
     </div>
 
@@ -180,7 +192,7 @@
                 </td>
                 <td class="px-3 py-2.5 text-right">
                   <button @click="openEdit(s)"
-                    class="btn-ghost py-1 px-2 text-xs opacity-0 group-hover:opacity-100 transition-opacity">
+                    class="btn-ghost py-1 px-2 text-xs">
                     Edit
                   </button>
                 </td>
