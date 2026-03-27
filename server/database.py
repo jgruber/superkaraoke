@@ -29,6 +29,8 @@ CREATE TABLE IF NOT EXISTS songs (
     likes            INTEGER NOT NULL DEFAULT 0,
     metadata_locked  INTEGER NOT NULL DEFAULT 0,
     is_duplicate     INTEGER NOT NULL DEFAULT 0,
+    metadata_updated INTEGER NOT NULL DEFAULT 0,
+    duration_secs    REAL,
     added_at         TEXT NOT NULL DEFAULT (datetime('now')),
     scanned_at       TEXT
 );
@@ -61,6 +63,18 @@ async def init_db():
         try:
             await db.execute(
                 "ALTER TABLE songs ADD COLUMN is_duplicate INTEGER NOT NULL DEFAULT 0"
+            )
+        except Exception:
+            pass  # column already exists
+        # Add duration_secs column to existing databases that predate it
+        try:
+            await db.execute("ALTER TABLE songs ADD COLUMN duration_secs REAL")
+        except Exception:
+            pass  # column already exists
+        # Add metadata_updated column to existing databases that predate it
+        try:
+            await db.execute(
+                "ALTER TABLE songs ADD COLUMN metadata_updated INTEGER NOT NULL DEFAULT 0"
             )
         except Exception:
             pass  # column already exists
@@ -99,8 +113,9 @@ async def upsert_song(data: dict) -> dict:
 
             await db.execute("""
                 INSERT INTO songs
-                    (id, file_path, cdg_path, kind, title, artist, year, genre, likes, scanned_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                    (id, file_path, cdg_path, kind, title, artist, year, genre, likes,
+                     duration_secs, scanned_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
             """, (
                 sid,
                 data['file_path'],
@@ -111,6 +126,7 @@ async def upsert_song(data: dict) -> dict:
                 data.get('year'),
                 data.get('genre', ''),
                 likes,
+                data.get('duration_secs'),
             ))
         else:
             # Keep metadata intact; only refresh file paths and scan timestamp
@@ -157,8 +173,9 @@ async def bulk_upsert_songs(songs: list[dict]):
         await db.execute("PRAGMA journal_mode=WAL")
         await db.executemany("""
             INSERT OR IGNORE INTO songs
-                (id, file_path, cdg_path, kind, title, artist, year, genre, likes, scanned_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, datetime('now'))
+                (id, file_path, cdg_path, kind, title, artist, year, genre, likes,
+                 duration_secs, scanned_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, datetime('now'))
         """, [
             (
                 s["id"],
@@ -169,6 +186,7 @@ async def bulk_upsert_songs(songs: list[dict]):
                 s.get("artist", ""),
                 s.get("year"),
                 s.get("genre", ""),
+                s.get("duration_secs"),
             )
             for s in songs
         ])
@@ -191,10 +209,19 @@ async def search_songs(
     kind_filter: str = "",
     include_duplicates: bool = True,
 ) -> tuple[list[dict], int]:
-    q = f"%{query}%" if query else "%"
+    # Split query into words so "Elvis Blue" matches title "Blue Suede Shoes"
+    # by artist "Elvis Presley" — each word must appear in title, artist, or genre.
+    words = [w for w in query.strip().split() if w] if query else []
+    if not words:
+        words = [""]   # empty query → match everything
 
-    conditions = ["(title LIKE ? OR artist LIKE ? OR genre LIKE ?)"]
-    base_params: list = [q, q, q]
+    conditions = [
+        " AND ".join("(title LIKE ? OR artist LIKE ? OR genre LIKE ?)" for _ in words)
+    ]
+    base_params: list = []
+    for w in words:
+        wq = f"%{w}%"
+        base_params.extend([wq, wq, wq])
 
     if kind_filter in ("cdg", "video"):
         conditions.append("kind = ?")
@@ -257,7 +284,7 @@ async def update_song_metadata(song_id: str, fields: dict) -> Optional[dict]:
     Update user-editable metadata fields.
     Automatically sets metadata_locked = 1 to protect against rescan overwrites.
     """
-    allowed = {"title", "artist", "year", "genre", "likes", "metadata_locked", "is_duplicate"}
+    allowed = {"title", "artist", "year", "genre", "likes", "metadata_locked", "is_duplicate", "metadata_updated"}
     updates = {k: v for k, v in fields.items() if k in allowed}
     if not updates:
         return await get_song(song_id)
@@ -319,6 +346,80 @@ async def delete_song(song_id: str):
     async with aiosqlite.connect(_DB) as db:
         await db.execute("DELETE FROM songs WHERE id = ?", (song_id,))
         await db.commit()
+
+
+async def convert_song_in_db(
+    old_id: str,
+    new_id: str,
+    file_path: str,
+    duration: Optional[float],
+    clear_cdg_path: bool = False,
+) -> Optional[dict]:
+    """Update DB after a successful transcode to MP4."""
+    async with aiosqlite.connect(_DB) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT id FROM songs WHERE id = ? AND id != ?", (new_id, old_id)
+        ) as cur:
+            collision = await cur.fetchone()
+        if collision:
+            await db.execute("DELETE FROM songs WHERE id = ?", (old_id,))
+        else:
+            cdg_col = ", cdg_path = NULL" if clear_cdg_path else ""
+            await db.execute(
+                f"UPDATE songs"
+                f"   SET id = ?, file_path = ?, kind = 'video', duration_secs = ?{cdg_col}"
+                f" WHERE id = ?",
+                (new_id, file_path, duration, old_id),
+            )
+        await db.commit()
+        async with db.execute("SELECT * FROM songs WHERE id = ?", (new_id,)) as cur:
+            row = await cur.fetchone()
+    return _row_to_song(row) if row else None
+
+
+async def apply_mb_to_db(
+    old_id: str,
+    new_id: str,
+    file_path: str,
+    cdg_path: Optional[str],
+    title: str,
+    artist: str,
+    year: Optional[int],
+    genre: str,
+) -> Optional[dict]:
+    """
+    Apply a MusicBrainz match to the database after files have been renamed.
+    Handles the case where new_id already exists (e.g. duplicate path collision).
+    Returns the updated song row.
+    """
+    async with aiosqlite.connect(_DB) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT id FROM songs WHERE id = ? AND id != ?", (new_id, old_id)
+        ) as cur:
+            collision = await cur.fetchone()
+        if collision:
+            # New path collides with an existing different song — just drop the old row
+            await db.execute("DELETE FROM songs WHERE id = ?", (old_id,))
+        else:
+            await db.execute("""
+                UPDATE songs
+                   SET id              = ?,
+                       file_path       = ?,
+                       cdg_path        = ?,
+                       title           = ?,
+                       artist          = ?,
+                       year            = ?,
+                       genre           = ?,
+                       metadata_locked  = 1,
+                       metadata_updated = 1
+                 WHERE id = ?
+            """, (new_id, file_path, cdg_path, title, artist, year, genre or "", old_id))
+        await db.commit()
+        async with db.execute("SELECT * FROM songs WHERE id = ?", (new_id,)) as cur:
+            row = await cur.fetchone()
+    return _row_to_song(row) if row else None
 
 
 async def remove_missing_songs(valid_ids: set[str]):

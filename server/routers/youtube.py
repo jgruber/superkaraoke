@@ -6,10 +6,14 @@ POST /api/youtube/download          — start a download job, returns {job_id}
 GET  /api/youtube/download/{job_id} — poll job status
 """
 import asyncio
+import hashlib
 import logging
+import re
 import uuid
 from collections import OrderedDict
 from pathlib import Path
+
+_UNSAFE_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 from pydantic import BaseModel
@@ -151,27 +155,86 @@ async def _run_download(job_id: str, url: str, channel: str):
         job["status"] = "done"
         job["progress"] = 100
 
+        from ..library import library, _song_id
+        from ..database import get_song, update_song_metadata, apply_mb_to_db
+        from ..metadata import search_musicbrainz, clean_for_mb_query, pick_best_mb_match
+
         # Rescan so the new file is indexed
-        from ..library import library
-        from ..library import _song_id
-        from ..database import get_song, update_song_metadata
         await library.scan()
 
-        # Resolve song_id from the known file path (reliable — no title search)
         filename = job.get("filename") or ""
-        if filename:
-            sid = _song_id(Path(filename))
-            song = await get_song(sid)
-            if song:
-                job["song_id"] = sid
-                # If the scan left artist blank, fill it from the YouTube channel
-                if not song.get("artist") and channel:
-                    await update_song_metadata(sid, {"artist": channel, "metadata_locked": 0})
-                    log.info("Set artist='%s' for downloaded song %s", channel, sid)
-            else:
-                log.warning("Downloaded file not found in DB after scan: %s", filename)
-        else:
+        if not filename:
             log.warning("No final filename recorded for job %s", job_id)
+            return
+
+        sid  = _song_id(Path(filename))
+        song = await get_song(sid)
+        if not song:
+            log.warning("Downloaded file not found in DB after scan: %s", filename)
+            return
+
+        # ── MusicBrainz auto-fix ──────────────────────────────────────────────
+        # Build query from stored title (YouTube ID and "in the style of" stripped)
+        raw_title = song.get("title", "") or Path(filename).stem
+        search_title, style_artist = clean_for_mb_query(raw_title)
+        search_artist = style_artist or song.get("artist", "") or channel
+
+        mb_applied = False
+        if search_title:
+            try:
+                candidates = await search_musicbrainz(search_title, search_artist)
+                best = pick_best_mb_match(candidates, min_score=100)
+                if best:
+                    fp  = Path(song["file_path"])
+                    cp  = Path(song["cdg_path"]) if song.get("cdg_path") else None
+                    ext = fp.suffix.lower()
+
+                    safe_stem = _UNSAFE_CHARS.sub(
+                        "", f"{best['artist']} - {best['title']}"
+                    ).strip().rstrip(".")
+                    new_fp = fp.parent / f"{safe_stem}{ext}"
+                    new_cp = (cp.parent / f"{safe_stem}.cdg") if cp else None
+
+                    rel    = str(new_fp.relative_to(settings.media_dir))
+                    new_id = hashlib.sha256(rel.encode()).hexdigest()[:12]
+
+                    if fp != new_fp and fp.exists():
+                        fp.rename(new_fp)
+                    if cp and new_cp and cp != new_cp and cp.exists():
+                        cp.rename(new_cp)
+
+                    updated = await apply_mb_to_db(
+                        old_id   = sid,
+                        new_id   = new_id,
+                        file_path= str(new_fp),
+                        cdg_path = str(new_cp) if new_cp else None,
+                        title    = best["title"],
+                        artist   = best["artist"],
+                        year     = best.get("year"),
+                        genre    = best.get("genre") or "",
+                    )
+                    if updated:
+                        sid = new_id
+                        mb_applied = True
+                        job["mb_applied"] = {
+                            "title": best["title"],
+                            "artist": best["artist"],
+                            "score": best["score"],
+                        }
+                        log.info("MB auto-fix: '%s - %s' (score=%d)",
+                                 best["artist"], best["title"], best["score"])
+            except Exception as exc:
+                log.warning("MB auto-fix failed for job %s: %s", job_id, exc)
+
+        # ── Fallback: use YouTube channel as artist if still blank ────────────
+        if not mb_applied:
+            song = await get_song(sid)
+            if song and not song.get("artist") and channel:
+                await update_song_metadata(sid, {"artist": channel, "metadata_locked": 0})
+                log.info("Set artist='%s' for downloaded song %s", channel, sid)
+
+        # song_id is set last so the frontend always gets the final (renamed) ID
+        job["song_id"] = sid
 
     except Exception as exc:
         log.error("Download failed for job %s: %s", job_id, exc)

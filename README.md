@@ -305,6 +305,273 @@ docker run -d \
 
 ---
 
+## Batch media conversion
+
+The `convert_media.py` script permanently converts non-MP4 files in the library to browser-native H.264/AAC MP4. Converted files are served directly via range-request `FileResponse` — no runtime ffmpeg transcoding, no stalls, full seeking support.
+
+### Supported conversions
+
+| Type | Input | Output | Notes |
+|---|---|---|---|
+| `avi` `mkv` `mov` `wmv` `flv` `m4v` `mpg` `mpeg` `ts` `vob` | Any video file ffmpeg can decode | `.mp4` (H.264/AAC) | Source file removed after conversion |
+| `cdg` | `.mp3` + `.cdg` pair | `.mp4` (H.264/AAC) | Both source files removed; DB record updated from kind `cdg` → `video` |
+| `video` | All video formats above | `.mp4` | Shorthand alias |
+| `all` | Everything | `.mp4` | Default when `--types` is omitted |
+
+Output files use `-movflags +faststart` (moov atom at the front) for instant browser seeking.
+
+**Safe to re-run** — if the target `.mp4` already exists the transcode step is skipped and only the database record is verified.
+
+### Running locally
+
+```bash
+# Preview everything that would be converted (no changes made)
+python3 library_scripts/convert_media.py --dry-run --media-dir /media/karaoke
+
+# Convert everything (all video formats + CDG pairs)
+python3 library_scripts/convert_media.py --media-dir /media/karaoke
+
+# Convert only AVI and MKV files
+python3 library_scripts/convert_media.py --types avi mkv --media-dir /media/karaoke
+
+# Convert only CDG+MP3 pairs
+python3 library_scripts/convert_media.py --types cdg --media-dir /media/karaoke
+
+# Override the database path
+python3 library_scripts/convert_media.py \
+  --media-dir /media/karaoke \
+  --db /var/lib/superkaraoke/superkaraoke.db
+```
+
+The server does **not** need to be stopped — files not yet converted continue to stream via the on-the-fly broadcaster while conversion runs in the background. After the script completes, click **Rescan** in the library UI (or restart the server) to confirm all paths are current.
+
+### Running with Docker
+
+Mount the same volumes as the running container so the script can reach the media files and the database:
+
+```bash
+# Convert everything
+docker run --rm \
+  -v /path/to/your/karaoke:/media/karaoke \
+  -v superkaraoke_data:/data \
+  superkaraoke \
+  python3 library_scripts/convert_media.py \
+    --media-dir /media/karaoke \
+    --db /data/superkaraoke.db
+
+# Convert only AVI files
+docker run --rm \
+  -v /path/to/your/karaoke:/media/karaoke \
+  -v superkaraoke_data:/data \
+  superkaraoke \
+  python3 library_scripts/convert_media.py \
+    --types avi \
+    --media-dir /media/karaoke \
+    --db /data/superkaraoke.db
+
+# Dry run (media can stay read-only)
+docker run --rm \
+  -v /path/to/your/karaoke:/media/karaoke:ro \
+  -v superkaraoke_data:/data \
+  superkaraoke \
+  python3 library_scripts/convert_media.py \
+    --dry-run \
+    --media-dir /media/karaoke \
+    --db /data/superkaraoke.db
+```
+
+> **Note:** The media volume must be mounted **read-write** (without `:ro`) for actual conversions so the script can write the `.mp4` files and remove the originals.
+
+### CLI reference
+
+```
+python3 library_scripts/convert_media.py [--types TYPE [TYPE ...]] [--dry-run] [--media-dir PATH] [--db PATH]
+
+  --types TYPE ...   One or more of: avi, mkv, mov, wmv, flv, m4v, mpg, mpeg, ts, vob,
+                     cdg, video (all video formats), all (default: all types)
+  --media-dir PATH   Root of the karaoke media directory (default: /media/karaoke)
+  --db PATH          Path to superkaraoke.db (default: /data/superkaraoke.db)
+  --dry-run          Print what would be done without modifying any files or the database
+```
+
+---
+
+## MusicBrainz metadata fix
+
+The `library_scripts/mb_fix.py` script enriches song metadata (title, artist, year, genre) via the MusicBrainz database. It renames files to the `Artist - Title.ext` convention and updates the database.
+
+### Running locally
+
+```bash
+# Interactive — review each match before applying
+python3 library_scripts/mb_fix.py
+
+# Automatic — apply only score=100 matches without prompting
+python3 library_scripts/mb_fix.py --auto
+
+# Only songs that have no artist set
+python3 library_scripts/mb_fix.py --no-artist --auto
+
+# Preview without changing anything
+python3 library_scripts/mb_fix.py --auto --dry-run
+```
+
+### Running with Docker
+
+```bash
+# Interactive session (allocate a TTY)
+docker run --rm -it \
+  -v /path/to/your/karaoke:/media/karaoke \
+  -v superkaraoke_data:/data \
+  superkaraoke \
+  python3 library_scripts/mb_fix.py
+
+# Automatic — apply score=100 matches
+docker run --rm \
+  -v /path/to/your/karaoke:/media/karaoke \
+  -v superkaraoke_data:/data \
+  superkaraoke \
+  python3 library_scripts/mb_fix.py --auto
+
+# Dry run — preview without touching files or database
+docker run --rm \
+  -v /path/to/your/karaoke:/media/karaoke \
+  -v superkaraoke_data:/data \
+  superkaraoke \
+  python3 library_scripts/mb_fix.py --auto --dry-run
+```
+
+### CLI reference
+
+```
+python3 library_scripts/mb_fix.py [options]
+
+  --no-artist        Only process songs with no artist set (default: all songs)
+  --youtube-only     Only process songs whose filename ends with a YouTube video ID
+  --auto             Automatic mode: apply best result without prompting
+  --min-score N      Minimum MusicBrainz score to accept in auto mode (default: 100)
+  --delete-unmatched Auto mode: delete file and DB entry when no match meets the threshold
+  --dry-run          Show what would change without renaming files or updating the DB
+  --limit N          Stop after processing N songs
+  --offset N         Skip the first N songs (useful for resuming)
+  --db PATH          Path to superkaraoke.db (default: /data/superkaraoke.db)
+  --media-dir PATH   Media root directory (default: /media/karaoke)
+```
+
+---
+
+## Database path migration
+
+The `library_scripts/path_replace.py` script replaces a path prefix in every `file_path` and `cdg_path` stored in the database.  Use it when moving a library to a machine where the media directory is mounted at a different location.
+
+Song IDs are derived from the path relative to the media root (`sha256(relative_path)[:12]`), so when only the mount-point prefix changes the relative paths — and therefore the IDs — stay the same.  If the relative structure also changes, IDs are recomputed against the new media root.
+
+### Running locally
+
+```bash
+# Preview what would change
+python3 library_scripts/path_replace.py /mnt/nas/karaoke /media/karaoke --dry-run
+
+# Apply the substitution
+python3 library_scripts/path_replace.py /mnt/nas/karaoke /media/karaoke
+
+# Specify a non-default database or media directory
+python3 library_scripts/path_replace.py /old/path /new/path \
+    --db /data/superkaraoke.db \
+    --media-dir /media/karaoke
+```
+
+### Running with Docker
+
+```bash
+# Preview (media does not need to be mounted for a dry run)
+docker run --rm \
+  -v superkaraoke_data:/data \
+  superkaraoke \
+  python3 library_scripts/path_replace.py /mnt/nas/karaoke /media/karaoke --dry-run
+
+# Apply the substitution
+docker run --rm \
+  -v superkaraoke_data:/data \
+  superkaraoke \
+  python3 library_scripts/path_replace.py /mnt/nas/karaoke /media/karaoke
+```
+
+After running, click **Rescan** in the library UI (or restart the container) to confirm all paths resolve correctly.
+
+### CLI reference
+
+```
+python3 library_scripts/path_replace.py OLD_PREFIX NEW_PREFIX [options]
+
+  OLD_PREFIX         Path prefix to replace (e.g. /mnt/nas/karaoke)
+  NEW_PREFIX         Replacement prefix     (e.g. /media/karaoke)
+  --db PATH          Path to superkaraoke.db (default: /data/superkaraoke.db)
+  --media-dir PATH   New media root, used to recompute song IDs (default: /media/karaoke)
+  --dry-run          Show what would change without modifying the database
+```
+
+---
+
+## Sunfly catalogue match
+
+The `library_scripts/sunfly_match.py` script matches Sun Fly CDG/MP3 files to the official Sunfly PDF catalogue, renames them to the correct `Artist - Title` format, and updates the database.
+
+### Running locally
+
+```bash
+# Preview matches without making changes
+python3 library_scripts/sunfly_match.py --dry-run \
+  --pdf "/path/to/Sunfly karaoke list.pdf"
+
+# Apply matches
+python3 library_scripts/sunfly_match.py \
+  --pdf "/path/to/Sunfly karaoke list.pdf"
+```
+
+### Running with Docker
+
+Copy the Sunfly PDF into your `/data` volume first, then:
+
+```bash
+# Dry run — preview matches
+docker run --rm \
+  -v /path/to/your/karaoke:/media/karaoke \
+  -v superkaraoke_data:/data \
+  superkaraoke \
+  python3 library_scripts/sunfly_match.py --dry-run
+
+# Apply matches (PDF must be at /data/Sunfly karaoke list.pdf)
+docker run --rm \
+  -v /path/to/your/karaoke:/media/karaoke \
+  -v superkaraoke_data:/data \
+  superkaraoke \
+  python3 library_scripts/sunfly_match.py
+
+# Only specific albums
+docker run --rm \
+  -v /path/to/your/karaoke:/media/karaoke \
+  -v superkaraoke_data:/data \
+  superkaraoke \
+  python3 library_scripts/sunfly_match.py --albums 52 100 114 --dry-run
+```
+
+### CLI reference
+
+```
+python3 library_scripts/sunfly_match.py [options]
+
+  --pdf PATH         Path to the Sunfly karaoke PDF (default: /data/Sunfly karaoke list.pdf)
+  --rebuild-cache    Re-parse the PDF even if a cache file exists
+  --db PATH          Path to superkaraoke.db (default: /data/superkaraoke.db)
+  --media-dir PATH   Media root directory (default: /media/karaoke)
+  --dry-run          Show matches without renaming files or updating the database
+  --albums N ...     Only process these SF album numbers (e.g. --albums 52 100 114)
+  --fuzzy-threshold  Minimum fuzzy-match score 0–100 to accept (default: 70)
+```
+
+---
+
 ## Architecture notes
 
 ### Single-port streaming
@@ -373,6 +640,11 @@ superkaraoke/
 │   │   └── style.css      # Tailwind CSS directives + component classes
 │   ├── tailwind.config.js
 │   └── vite.config.js
+├── library_scripts/
+│   ├── convert_media.py   # Batch media conversion utility (video + CDG → MP4)
+│   ├── mb_fix.py          # MusicBrainz metadata enrichment + file rename
+│   ├── path_replace.py    # Replace file_path prefix in DB (for instance migration)
+│   └── sunfly_match.py    # Sunfly catalogue matching + file rename
 ├── run.py                 # Entry point (uvicorn)
 └── requirements.txt
 ```

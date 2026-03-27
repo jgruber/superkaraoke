@@ -29,6 +29,8 @@ function initLibrary() {
     song: null,       // working copy being edited
     saving: false,
     redetecting: false,
+    converting: false,
+    convertError: null,
     deleteConfirm: false,
     deleting: false,
 
@@ -39,6 +41,21 @@ function initLibrary() {
     mbLoading: false,
     mbResults: [],
     mbError: null,
+
+    // MusicBrainz fix modal (inline — renames file + updates DB)
+    mbFixModal: false,
+    mbFixSong: null,
+    mbFixLoading: false,
+    mbFixApplying: false,
+    mbFixResults: [],
+    mbFixError: null,
+    mbFixSearched: false,
+    mbFixTitle: '',
+    mbFixArtist: '',
+
+    // Enqueue modal (username prompt)
+    enqueueModal: null,   // song waiting to be enqueued, or null
+    enqueueUser: '',
 
     // Import confirmation
     importConfirm: false,
@@ -132,6 +149,8 @@ function initLibrary() {
       this.mbError = null
       this.mbTitle  = s.title
       this.mbArtist = s.artist
+      this.convertError = null
+      this.converting = false
       this.deleteConfirm = false
       this.modal = true
       this.$nextTick(() => this.$refs.titleInput?.focus())
@@ -212,6 +231,32 @@ function initLibrary() {
       }
     },
 
+    // ── Convert to MP4 ────────────────────────────────────────────────────
+    async convertToMp4() {
+      if (!this.song) return
+      this.converting   = true
+      this.convertError = null
+      const oldId = this.song.id
+      try {
+        const r = await fetch(`/api/library/${oldId}/convert`, { method: 'POST' })
+        if (!r.ok) {
+          const err = await r.json().catch(() => ({}))
+          throw new Error(err.detail || 'Conversion failed')
+        }
+        const updated = await r.json()
+        // ID and file_path may have changed — update both the modal and table
+        this.song = { ...updated }
+        const idx = this.songs.findIndex(s => s.id === oldId)
+        if (idx !== -1) this.songs[idx] = updated
+        this.showToast('Converted to MP4')
+        this.fetchStats()
+      } catch (e) {
+        this.convertError = e.message || 'Conversion failed — check server logs'
+      } finally {
+        this.converting = false
+      }
+    },
+
     // ── MusicBrainz ───────────────────────────────────────────────────────
     toggleMb() {
       this.mbOpen = !this.mbOpen
@@ -244,6 +289,87 @@ function initLibrary() {
       if (result.genre)  this.song.genre  = result.genre
       this.mbOpen = false
       this.showToast('Applied — review and save')
+    },
+
+    // ── MusicBrainz Fix (inline — full rename + DB update) ────────────────
+    openMbFix(s) {
+      this.mbFixSong = s
+      // Strip YouTube ID suffix: "Title_dQw4w9WgXcQ" or "Title [dQw4w9WgXcQ]"
+      let title  = (s.title  || '').replace(/[\s_]\[?[A-Za-z0-9_-]{11}\]?\s*$/, '').trim()
+      let artist = s.artist || ''
+      // Pre-process "Song in the style of Artist" so search inputs are clean
+      const styleMatch = title.match(/^(.+?)\s+\(?\s*in\s+the\s+style\s+of\s+(.+?)\s*\)?\s*$/i)
+      if (styleMatch) {
+        title  = styleMatch[1].trim()
+        artist = styleMatch[2].trim()   // explicit attribution always overrides directory hint
+      }
+      this.mbFixTitle    = title
+      this.mbFixArtist   = artist
+      this.mbFixResults  = []
+      this.mbFixError    = null
+      this.mbFixSearched = false
+      this.mbFixLoading  = false
+      this.mbFixApplying = false
+      this.mbFixModal    = true
+      // Auto-search when we have something to search with
+      if (this.mbFixTitle || this.mbFixArtist) {
+        this.$nextTick(() => this.mbFixSearch())
+      }
+    },
+
+    async mbFixSearch() {
+      if (!this.mbFixTitle && !this.mbFixArtist) return
+      this.mbFixLoading  = true
+      this.mbFixError    = null
+      this.mbFixResults  = []
+      this.mbFixSearched = false
+      try {
+        const p = new URLSearchParams({ title: this.mbFixTitle, artist: this.mbFixArtist })
+        const r = await fetch(`/api/library/${this.mbFixSong.id}/lookup?${p}`, { method: 'POST' })
+        if (!r.ok) throw new Error()
+        const d = await r.json()
+        this.mbFixResults  = d.results
+        this.mbFixSearched = true
+        if (this.mbFixResults.length === 0) this.mbFixError = 'No results found'
+      } catch {
+        this.mbFixError    = 'Lookup failed — check connection'
+        this.mbFixSearched = true
+      } finally {
+        this.mbFixLoading = false
+      }
+    },
+
+    async mbFixApply(result) {
+      if (!this.mbFixSong) return
+      this.mbFixApplying = true
+      const oldId = this.mbFixSong.id
+      try {
+        const r = await fetch(`/api/library/${oldId}/mb-apply`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            title:  result.title,
+            artist: result.artist,
+            year:   result.year   || null,
+            genre:  result.genre  || '',
+          }),
+        })
+        if (!r.ok) {
+          const err = await r.json().catch(() => ({}))
+          throw new Error(err.detail || 'Apply failed')
+        }
+        const updated = await r.json()
+        // Replace old row — ID may have changed due to rename
+        const idx = this.songs.findIndex(s => s.id === oldId)
+        if (idx !== -1) this.songs[idx] = updated
+        this.mbFixModal = false
+        this.showToast(`Applied: ${result.artist} – ${result.title}`)
+        this.fetchStats()
+      } catch (e) {
+        this.mbFixError = e.message || 'Apply failed'
+      } finally {
+        this.mbFixApplying = false
+      }
     },
 
     // ── Export / Import ───────────────────────────────────────────────────
@@ -283,6 +409,41 @@ function initLibrary() {
         this.showToast(e.message || 'Import failed', 'error')
       } finally {
         this.importing = false
+      }
+    },
+
+    // ── Enqueue ───────────────────────────────────────────────────────────
+    openEnqueue(song) {
+      const saved = localStorage.getItem('sk-username')
+      if (saved) {
+        this._enqueue(song, saved)
+        return
+      }
+      this.enqueueModal = song
+      this.enqueueUser = ''
+      this.$nextTick(() => this.$refs.enqueueUserInput?.focus())
+    },
+
+    async confirmEnqueue() {
+      if (!this.enqueueModal) return
+      const user = this.enqueueUser.trim() || 'anonymous'
+      localStorage.setItem('sk-username', user)
+      const song = this.enqueueModal
+      this.enqueueModal = null
+      await this._enqueue(song, user)
+    },
+
+    async _enqueue(song, user) {
+      try {
+        const res = await fetch('/api/queue', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ song_id: song.id, user }),
+        })
+        if (!res.ok) throw new Error()
+        this.showToast(`"${song.title}" added to queue`)
+      } catch {
+        this.showToast('Failed to add song', 'error')
       }
     },
 

@@ -1,3 +1,4 @@
+# Server dependencies
 fastapi>=0.111.0
 uvicorn[standard]>=0.29.0
 aiosqlite>=0.20.0
@@ -8,3 +9,6 @@ mutagen>=1.47.0
 httpx>=0.27.0
 pydantic-settings>=2.0.0
 yt-dlp>=2026.3.17
+
+# Utility script dependencies (sunfly_match.py)
+pdfplumber>=0.11.0

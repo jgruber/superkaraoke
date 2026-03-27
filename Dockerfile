@@ -29,6 +29,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application source
 COPY run.py ./
 COPY server/ ./server/
+COPY library_scripts/ ./library_scripts/
 
 # Copy built frontend from Stage 1
 COPY --from=frontend-builder /build/frontend/dist ./frontend/dist

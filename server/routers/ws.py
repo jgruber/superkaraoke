@@ -21,6 +21,8 @@ async def websocket_endpoint(websocket: WebSocket):
         data = json.loads(raw)
         client_type = data.get("client_type", "user")
         name = data.get("name", "")
+    except WebSocketDisconnect:
+        return
     except Exception:
         client_type = "user"
         name = ""
@@ -39,11 +41,14 @@ async def websocket_endpoint(websocket: WebSocket):
     try:
         while True:
             raw = await websocket.receive_text()
-            # Clients can send pings or other messages; currently just ignore
             try:
                 msg = json.loads(raw)
-                if msg.get("type") == "ping":
+                msg_type = msg.get("type")
+                if msg_type == "ping":
                     await ws_manager.send(websocket, {"type": "pong"})
+                elif msg_type == "song_ended":
+                    # Screen reports that video playback has finished naturally
+                    queue_manager.signal_song_ended()
             except Exception:
                 pass
     except WebSocketDisconnect:

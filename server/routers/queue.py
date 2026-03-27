@@ -61,3 +61,15 @@ async def move_down(queue_id: str):
 async def skip():
     await queue_manager.skip()
     return {"ok": True}
+
+
+@router.post("/queue/pause")
+async def pause():
+    await queue_manager.pause()
+    return {"ok": True, "paused": True}
+
+
+@router.post("/queue/resume")
+async def resume():
+    await queue_manager.resume()
+    return {"ok": True, "paused": False}

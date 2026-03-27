@@ -4,6 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>SuperKaraoke — Library</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
   <link rel="stylesheet" href="/src/style.css" />
 </head>
 <body class="h-full min-h-screen">
@@ -19,7 +20,15 @@
       <nav class="hidden sm:flex items-center gap-1 ml-4">
         <a href="/"        class="btn-ghost text-sm font-medium">Queue</a>
         <a href="/library" class="btn-ghost text-sm font-medium text-brand-600 dark:text-brand-400">Library</a>
-        <a href="/screen"  class="btn-ghost text-sm font-medium" target="_blank">Screen ↗</a>
+        <a href="/screen" target="_blank"
+           title="Open Screen"
+           class="w-9 h-9 rounded-full flex items-center justify-center transition-colors
+                  bg-brand-100 hover:bg-brand-200 dark:bg-brand-900 dark:hover:bg-brand-800
+                  text-brand-700 dark:text-brand-300">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" class="w-4 h-4">
+            <path d="M2 4a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2zm2 0v12h16V4zm5 15h6v1H9z"/>
+          </svg>
+        </a>
       </nav>
 
       <div class="flex-1"></div>
@@ -181,16 +190,23 @@
               <tr class="odd:bg-white even:bg-gray-50 dark:odd:bg-gray-950 dark:even:bg-gray-900/50 hover:bg-brand-50 dark:hover:bg-gray-900/70 transition-colors group">
                 <td class="px-3 py-2.5 text-xs text-gray-400 tabular-nums"
                     x-text="page * 50 + i + 1"></td>
-                <td class="px-3 py-2.5">
+                <td class="px-3 py-2.5 cursor-pointer group/title"
+                    @click="openEnqueue(s)"
+                    :title="'Add \'' + s.title + '\' to queue'">
                   <span
                     :class="s.is_duplicate
                       ? 'font-medium text-gray-400 dark:text-gray-600 italic'
-                      : 'font-medium'"
+                      : 'font-medium group-hover/title:text-brand-600 dark:group-hover/title:text-brand-400'"
+                    class="transition-colors"
                     x-text="s.title || '—'"></span>
                   <!-- locked badge -->
                   <span x-show="s.metadata_locked"
                     class="ml-1.5 badge bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400"
                     title="Metadata locked">🔒</span>
+                  <!-- mb-cleaned badge -->
+                  <span x-show="s.metadata_updated"
+                    class="ml-1.5 badge bg-orange-100 dark:bg-orange-950 text-orange-600 dark:text-orange-400"
+                    title="Cleaned via MusicBrainz">MB</span>
                   <!-- duplicate badge -->
                   <span x-show="s.is_duplicate"
                     class="ml-1.5 badge bg-amber-100 dark:bg-amber-900 text-amber-700 dark:text-amber-400"
@@ -219,10 +235,19 @@
                   </span>
                 </td>
                 <td class="px-3 py-2.5 text-right">
-                  <button @click="openEdit(s)"
-                    class="btn-ghost py-1 px-2 text-xs">
-                    Edit
-                  </button>
+                  <div class="flex items-center justify-end gap-1">
+                    <button @click="openMbFix(s)"
+                      title="Fix with MusicBrainz (rename file + update metadata)"
+                      class="btn-ghost py-1 px-2 text-xs text-orange-500 hover:text-orange-700 dark:text-orange-400 dark:hover:text-orange-300">
+                      <svg viewBox="0 0 24 24" class="w-3.5 h-3.5 inline-block" fill="currentColor" aria-hidden="true">
+                        <path d="M12 2C6.477 2 2 6.477 2 12s4.477 10 10 10 10-4.477 10-10S17.523 2 12 2zm0 2c1.4 0 2.72.367 3.862 1.007L5.007 15.862A7.96 7.96 0 0 1 4 12c0-4.418 3.582-8 8-8zm0 16c-1.4 0-2.72-.367-3.862-1.007l10.855-10.855A7.96 7.96 0 0 1 20 12c0 4.418-3.582 8-8 8z"/>
+                      </svg>
+                    </button>
+                    <button @click="openEdit(s)"
+                      class="btn-ghost py-1 px-2 text-xs">
+                      Edit
+                    </button>
+                  </div>
                 </td>
               </tr>
             </template>
@@ -252,6 +277,44 @@
       <button @click="nextPage()" :disabled="page >= totalPages - 1" class="btn-ghost">Next →</button>
     </div>
   </main>
+
+  <!-- ── Enqueue username modal ───────────────────────────────────────────── -->
+  <div
+    x-show="enqueueModal"
+    x-transition:enter="transition-opacity duration-150"
+    x-transition:enter-start="opacity-0"
+    x-transition:enter-end="opacity-100"
+    x-transition:leave="transition-opacity duration-100"
+    x-transition:leave-start="opacity-100"
+    x-transition:leave-end="opacity-0"
+    class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
+    @click.self="enqueueModal = null"
+  >
+    <div class="card w-full max-w-sm p-6 shadow-2xl"
+      x-transition:enter="transition duration-150"
+      x-transition:enter-start="opacity-0 scale-95"
+      x-transition:enter-end="opacity-100 scale-100"
+    >
+      <h3 class="font-semibold text-base mb-1">Add to Queue</h3>
+      <p class="text-sm text-gray-500 dark:text-gray-400 mb-4 truncate">
+        "<span class="font-medium text-gray-700 dark:text-gray-300" x-text="enqueueModal?.title"></span>"
+      </p>
+      <label class="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Your name</label>
+      <input
+        x-ref="enqueueUserInput"
+        x-model="enqueueUser"
+        @keyup.enter="confirmEnqueue()"
+        @keyup.escape="enqueueModal = null"
+        type="text"
+        placeholder="Enter your name"
+        class="input mb-4"
+      />
+      <div class="flex gap-2">
+        <button @click="enqueueModal = null" class="btn-ghost flex-1">Cancel</button>
+        <button @click="confirmEnqueue()" class="btn-primary flex-1">Add to Queue</button>
+      </div>
+    </div>
+  </div>
 
   <!-- ── Import confirm modal ─────────────────────────────────────────────── -->
   <div
@@ -392,6 +455,41 @@
           </div>
         </div>
 
+        <!-- Convert to MP4 (shown when the file is not already an .mp4 video) -->
+        <div class="border-t border-gray-200 dark:border-gray-800 pt-3"
+             x-show="song && (song.kind === 'cdg' || !song.file_path?.toLowerCase().endsWith('.mp4'))">
+          <div class="flex items-center justify-between gap-3">
+            <div class="min-w-0">
+              <p class="text-sm font-medium">Convert to MP4</p>
+              <p class="text-xs text-gray-500 dark:text-gray-400">
+                <span x-show="song?.kind === 'cdg'">Merge CDG+MP3 → H.264/AAC MP4 for reliable streaming.</span>
+                <span x-show="song?.kind !== 'cdg'">Re-encode to H.264/AAC MP4 for reliable streaming.</span>
+              </p>
+              <p x-show="convertError" class="text-xs text-red-500 dark:text-red-400 mt-1" x-text="convertError"></p>
+            </div>
+            <button @click="convertToMp4()" :disabled="converting"
+              class="shrink-0 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors
+                     bg-blue-100 hover:bg-blue-200 text-blue-700
+                     dark:bg-blue-950 dark:hover:bg-blue-900 dark:text-blue-300
+                     disabled:opacity-50">
+              <span x-show="!converting">
+                <svg class="w-3.5 h-3.5 inline-block mr-1 -mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                    d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M9 19l3 3m0 0l3-3m-3 3V10"/>
+                </svg>
+                Convert
+              </span>
+              <span x-show="converting" class="flex items-center gap-1.5">
+                <svg class="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24">
+                  <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+                  <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/>
+                </svg>
+                Converting…
+              </span>
+            </button>
+          </div>
+        </div>
+
         <!-- MusicBrainz lookup -->
         <div class="border-t border-gray-200 dark:border-gray-800 pt-3">
           <button @click="toggleMb()"
@@ -466,7 +564,7 @@
     x-transition:leave="transition-opacity duration-100"
     x-transition:leave-start="opacity-100"
     x-transition:leave-end="opacity-0"
-    class="fixed inset-0 z-60 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
+    class="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
     @click.self="deleteConfirm = false"
   >
     <div
@@ -488,6 +586,113 @@
           class="flex-1 px-4 py-2 rounded-xl font-medium text-sm bg-red-600 hover:bg-red-700 text-white transition-colors disabled:opacity-50">
           <span x-text="deleting ? 'Removing…' : 'Yes, remove it'"></span>
         </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── MusicBrainz Fix modal ────────────────────────────────────────────── -->
+  <div
+    x-show="mbFixModal"
+    x-transition:enter="transition-opacity duration-200"
+    x-transition:enter-start="opacity-0"
+    x-transition:enter-end="opacity-100"
+    x-transition:leave="transition-opacity duration-150"
+    x-transition:leave-start="opacity-100"
+    x-transition:leave-end="opacity-0"
+    class="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-4 bg-black/50 backdrop-blur-sm"
+    @click.self="mbFixModal = false"
+  >
+    <div
+      class="card w-full max-w-lg shadow-2xl flex flex-col max-h-[90vh]"
+      @click.stop
+      x-transition:enter="transition duration-200"
+      x-transition:enter-start="opacity-0 translate-y-4 sm:scale-95"
+      x-transition:enter-end="opacity-100 translate-y-0 sm:scale-100"
+    >
+      <!-- Header -->
+      <div class="px-5 pt-5 pb-3 border-b border-gray-200 dark:border-gray-800 shrink-0">
+        <div class="flex items-start justify-between gap-3">
+          <div class="min-w-0">
+            <div class="flex items-center gap-2">
+              <svg viewBox="0 0 24 24" class="w-4 h-4 text-orange-500 shrink-0" fill="currentColor">
+                <path d="M12 2C6.477 2 2 6.477 2 12s4.477 10 10 10 10-4.477 10-10S17.523 2 12 2zm0 2c1.4 0 2.72.367 3.862 1.007L5.007 15.862A7.96 7.96 0 0 1 4 12c0-4.418 3.582-8 8-8zm0 16c-1.4 0-2.72-.367-3.862-1.007l10.855-10.855A7.96 7.96 0 0 1 20 12c0 4.418-3.582 8-8 8z"/>
+              </svg>
+              <h2 class="font-semibold text-base">MusicBrainz Fix</h2>
+            </div>
+            <p class="text-xs text-gray-500 dark:text-gray-400 mt-0.5 truncate"
+               x-text="mbFixSong?.file_path || ''"></p>
+          </div>
+          <button @click="mbFixModal = false" class="btn-ghost p-1 text-gray-400 shrink-0">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+            </svg>
+          </button>
+        </div>
+      </div>
+
+      <!-- Search bar -->
+      <div class="px-5 py-3 border-b border-gray-200 dark:border-gray-800 shrink-0 flex gap-2">
+        <input x-model="mbFixTitle" @keyup.enter="mbFixSearch()" type="text"
+          placeholder="Title" class="input flex-1 text-sm" />
+        <input x-model="mbFixArtist" @keyup.enter="mbFixSearch()" type="text"
+          placeholder="Artist" class="input flex-1 text-sm" />
+        <button @click="mbFixSearch()" :disabled="mbFixLoading" class="btn-primary shrink-0 text-sm">
+          <span x-text="mbFixLoading ? '…' : 'Search'"></span>
+        </button>
+      </div>
+
+      <!-- Results -->
+      <div class="flex-1 overflow-y-auto px-5 py-3 flex flex-col gap-2">
+        <!-- Loading -->
+        <p x-show="mbFixLoading" class="text-sm text-gray-400 dark:text-gray-500 text-center py-6 animate-pulse">
+          Searching MusicBrainz…
+        </p>
+
+        <!-- Error -->
+        <p x-show="mbFixError && !mbFixLoading"
+           class="text-sm text-red-500 dark:text-red-400 text-center py-4"
+           x-text="mbFixError"></p>
+
+        <!-- Candidates -->
+        <template x-for="r in mbFixResults" :key="r.mb_id">
+          <button
+            @click="mbFixApply(r)"
+            :disabled="mbFixApplying"
+            class="w-full text-left rounded-xl border border-gray-200 dark:border-gray-700 px-4 py-3
+                   hover:border-orange-400 dark:hover:border-orange-500 hover:bg-orange-50 dark:hover:bg-orange-950/20
+                   transition-colors disabled:opacity-50"
+          >
+            <div class="flex items-start justify-between gap-3">
+              <div class="min-w-0">
+                <p class="font-medium text-sm truncate" x-text="r.title"></p>
+                <p class="text-xs text-gray-500 dark:text-gray-400 mt-0.5 truncate"
+                   x-text="[r.artist, r.year, r.genre].filter(Boolean).join(' · ')"></p>
+              </div>
+              <span
+                class="badge shrink-0 tabular-nums"
+                :class="r.score >= 90 ? 'bg-green-100 text-green-700 dark:bg-green-950 dark:text-green-400'
+                       : r.score >= 70 ? 'bg-yellow-100 text-yellow-700 dark:bg-yellow-950 dark:text-yellow-400'
+                       : 'bg-gray-100 text-gray-500 dark:bg-gray-800'"
+                x-text="r.score + '%'">
+              </span>
+            </div>
+            <p x-show="mbFixApplying" class="text-xs text-orange-500 mt-1">Applying…</p>
+          </button>
+        </template>
+
+        <!-- Empty (after search, no results) -->
+        <div x-show="!mbFixLoading && !mbFixError && mbFixResults.length === 0 && mbFixSearched"
+             class="text-center py-8 text-gray-400 dark:text-gray-600">
+          <p class="text-2xl mb-1">🔍</p>
+          <p class="text-sm">No results — try different search terms</p>
+        </div>
+      </div>
+
+      <!-- Footer note -->
+      <div class="px-5 py-3 border-t border-gray-200 dark:border-gray-800 shrink-0">
+        <p class="text-xs text-gray-400 dark:text-gray-500">
+          Selecting a result will rename the file to <span class="font-mono">Artist - Title.ext</span> and update all metadata.
+        </p>
       </div>
     </div>
   </div>

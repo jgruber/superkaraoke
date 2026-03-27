@@ -27,6 +27,7 @@ function initApp() {
     // Queue
     queue: [],
     nowPlaying: null,
+    paused: false,
 
     // Enqueue modal
     modal: null,          // song being confirmed
@@ -93,10 +94,17 @@ function initApp() {
       if (msg.type === 'state' || msg.type === 'queue_update') {
         this.queue = msg.queue || []
         this.nowPlaying = msg.now_playing || null
+        this.paused = msg.now_playing?.paused || false
       } else if (msg.type === 'play') {
         this.nowPlaying = msg
+        this.paused = false
+      } else if (msg.type === 'pause') {
+        this.paused = true
+      } else if (msg.type === 'resume') {
+        this.paused = false
       } else if (msg.type === 'stop') {
         this.nowPlaying = null
+        this.paused = false
       }
     },
 
@@ -148,9 +156,33 @@ function initApp() {
 
     // ── Enqueue ────────────────────────────────────────────────────────────
     openEnqueue(song) {
+      const saved = localStorage.getItem('sk-username')
+      if (saved) {
+        // Username already known — enqueue immediately without prompting
+        this._enqueue(song, saved)
+        return
+      }
       this.modal = song
-      this.modalUser = localStorage.getItem('sk-username') || ''
+      this.modalUser = ''
       this.$nextTick(() => this.$refs.usernameInput?.focus())
+    },
+
+    async _enqueue(song, user, playNext = false) {
+      try {
+        const res = await fetch('/api/queue', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ song_id: song.id, user, play_next: playNext }),
+        })
+        if (!res.ok) throw new Error()
+        this.showToast(`"${song.title}" added to queue`)
+        this.query = ''
+        this.songs = []
+        this.total = 0
+        this.page = 0
+      } catch {
+        this.showToast('Failed to add song', 'error')
+      }
     },
 
     closeModal() {
@@ -161,23 +193,9 @@ function initApp() {
       if (!this.modal) return
       const user = this.modalUser.trim() || 'anonymous'
       localStorage.setItem('sk-username', user)
-
-      try {
-        const res = await fetch('/api/queue', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ song_id: this.modal.id, user, play_next: playNext }),
-        })
-        if (!res.ok) throw new Error()
-        this.showToast(`"${this.modal.title}" added to queue`)
-        this.closeModal()
-        this.query = ''
-        this.songs = []
-        this.total = 0
-        this.page = 0
-      } catch {
-        this.showToast('Failed to add song', 'error')
-      }
+      const song = this.modal
+      this.closeModal()
+      await this._enqueue(song, user, playNext)
     },
 
     isInQueue(songId) {
@@ -200,6 +218,11 @@ function initApp() {
 
     async skip() {
       await fetch('/api/queue/skip', { method: 'POST' })
+    },
+
+    async togglePause() {
+      const endpoint = this.paused ? '/api/queue/resume' : '/api/queue/pause'
+      await fetch(endpoint, { method: 'POST' })
     },
 
     // ── Likes ──────────────────────────────────────────────────────────────

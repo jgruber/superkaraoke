@@ -49,6 +49,10 @@ _static_dir = Path(__file__).parent.parent / settings.static_dir
 if _static_dir.exists():
     app.mount("/assets", StaticFiles(directory=str(_static_dir / "assets")), name="assets")
 
+    @app.get("/favicon.svg")
+    async def favicon():
+        return FileResponse(str(_static_dir / "favicon.svg"), media_type="image/svg+xml")
+
     @app.get("/")
     async def index():
         return FileResponse(str(_static_dir / "index.html"))

@@ -14,12 +14,22 @@ from .ws_manager import ws_manager
 
 log = logging.getLogger(__name__)
 
+# Seconds all screens buffer before starting playback — gives late-connecting
+# screens time to load and ensures everyone starts at the same moment.
+BUFFER_DELAY = 0.0 
+
+# Safety timeout: advance queue even if the screen never signals song_ended
+# (e.g. screen browser closed mid-song).  2 hours covers the longest karaoke set.
+_PLAY_TIMEOUT = 7200
+
 
 class QueueEntry:
     def __init__(self, song: dict, user: str):
         self.id = str(uuid.uuid4())[:8]
         self.song = song
         self.user = user
+        self.server_ts: float = 0.0
+        self.play_at: float = 0.0
 
     def to_dict(self) -> dict:
         return {
@@ -39,6 +49,8 @@ class QueueManager:
         self._now_playing: Optional[QueueEntry] = None
         self._playback_task: Optional[asyncio.Task] = None
         self._skip_event = asyncio.Event()
+        self._song_ended_event = asyncio.Event()
+        self._paused: bool = False
 
     # ── Queue mutations ──────────────────────────────────────────────────────
 
@@ -89,14 +101,34 @@ class QueueManager:
     async def skip(self):
         self._skip_event.set()
 
+    async def pause(self):
+        if not self._paused and self._now_playing:
+            self._paused = True
+            await ws_manager.broadcast({"type": "pause"})
+            await self._broadcast_queue()
+
+    async def resume(self):
+        if self._paused:
+            self._paused = False
+            await ws_manager.broadcast({"type": "resume"})
+            await self._broadcast_queue()
+
+    def signal_song_ended(self):
+        """Called when the screen reports that video playback has finished."""
+        self._song_ended_event.set()
+
     def get_queue(self) -> list[dict]:
         return [e.to_dict() for e in self._queue]
 
     def now_playing(self) -> Optional[dict]:
         if self._now_playing:
+            e = self._now_playing
             return {
-                **self._now_playing.to_dict(),
-                "stream_url": f"/stream/{self._now_playing.song['id']}",
+                **e.to_dict(),
+                "stream_url": f"/stream/{e.song['id']}",
+                "server_ts": e.server_ts,
+                "play_at": e.play_at,
+                "paused": self._paused,
             }
         return None
 
@@ -120,8 +152,10 @@ class QueueManager:
                     self._event.clear()
 
             self._now_playing = entry
+            self._paused = False
             await self._play(entry)
             self._now_playing = None
+            self._paused = False
 
             await ws_manager.broadcast({"type": "stop"})
             await self._broadcast_queue()
@@ -130,10 +164,10 @@ class QueueManager:
         song = entry.song
         log.info(f"Now playing: {song['title']} (requested by {entry.user})")
 
-        # Start the default (semitones=0) broadcaster; pitched variants spawn on demand
-        broadcaster = stream_manager.start_stream(song, semitones=0)
-
         stream_url = f"/stream/{song['id']}"
+        now = time.time()
+        entry.server_ts = now
+        entry.play_at = now + BUFFER_DELAY
         play_msg = {
             "type": "play",
             "queue_id": entry.id,
@@ -145,20 +179,31 @@ class QueueManager:
             },
             "stream_url": stream_url,
             "user": entry.user,
-            "server_ts": time.time(),
+            "server_ts": now,
+            "play_at": now + BUFFER_DELAY,  # all screens start playback simultaneously
+            "duration_secs": song.get("duration_secs"),
         }
         await ws_manager.broadcast(play_msg)
 
-        # Wait until ffmpeg finishes or skip is requested
+        # Wait until the screen signals the song ended, the user skips,
+        # or the safety timeout fires.  The broadcaster (if any) is NOT used
+        # for timing — it may finish well before real-time for CDG files.
         self._skip_event.clear()
-        done_task = asyncio.create_task(_wait_broadcaster_done(broadcaster))
-        skip_task = asyncio.create_task(self._skip_event.wait())
+        self._song_ended_event.clear()
 
-        _, pending = await asyncio.wait(
-            [done_task, skip_task], return_when=asyncio.FIRST_COMPLETED
+        done, pending = await asyncio.wait(
+            [
+                asyncio.create_task(self._skip_event.wait()),
+                asyncio.create_task(self._song_ended_event.wait()),
+            ],
+            return_when=asyncio.FIRST_COMPLETED,
+            timeout=_PLAY_TIMEOUT,
         )
         for t in pending:
             t.cancel()
+
+        if not done:
+            log.warning(f"[{song['id']}] play timeout after {_PLAY_TIMEOUT}s, advancing queue")
 
         # Stop every semitone variant for this song
         await stream_manager.stop_all_for_song(song["id"])
@@ -171,11 +216,6 @@ class QueueManager:
             "queue": self.get_queue(),
             "now_playing": self.now_playing(),
         })
-
-
-async def _wait_broadcaster_done(broadcaster):
-    while not broadcaster.done:
-        await asyncio.sleep(0.5)
 
 
 queue_manager = QueueManager()

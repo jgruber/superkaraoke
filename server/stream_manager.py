@@ -25,18 +25,40 @@ log = logging.getLogger(__name__)
 FRAG_FLAGS = "frag_keyframe+empty_moov+default_base_moof"
 
 
-def _pitch_filter(semitones: int) -> list[str]:
-    """Return -af rubberband filter args for the given semitone offset, or [] for no shift."""
-    if semitones == 0:
-        return []
-    ratio = 2 ** (semitones / 12)
-    return ["-af", f"rubberband=pitch={ratio}"]
+def _cdg_audio_filter(semitones: int) -> list[str]:
+    """
+    Build -af chain for CDG streams:
+      • rubberband pitch shift (if requested)
+      • silenceremove to strip trailing silence > 2 s from the MP3
+        (karaoke MP3s typically have 3-10 s of dead air baked in)
+    Both filters are comma-chained into a single -af argument so they
+    don't conflict with each other.
+    """
+    silence = "silenceremove=stop_periods=-1:stop_duration=2:stop_threshold=-50dB"
+    if semitones != 0:
+        ratio = 2 ** (semitones / 12)
+        chain = f"rubberband=pitch={ratio},{silence}"
+    else:
+        chain = silence
+    return ["-af", chain]
+
+
+def _video_audio_filter(semitones: int) -> list[str]:
+    """
+    Build -af chain for video streams:
+      • aresample=async=1000  — fills gaps left by dropped/corrupt audio packets
+      • rubberband pitch shift — only when semitones != 0
+    """
+    parts = ["aresample=async=1000"]
+    if semitones != 0:
+        ratio = 2 ** (semitones / 12)
+        parts.append(f"rubberband=pitch={ratio}")
+    return ["-af", ",".join(parts)]
 
 
 def _build_ffmpeg_cmd(song: dict, semitones: int = 0) -> list[str]:
     kind = song["kind"]
     loglevel = settings.ffmpeg_loglevel
-    pitch = _pitch_filter(semitones)
 
     if kind == "cdg":
         audio_path = song["path"]
@@ -47,7 +69,9 @@ def _build_ffmpeg_cmd(song: dict, semitones: int = 0) -> list[str]:
             "-i", cdg_path,         # input 1: CDG video
             "-map", "1:v",          # video from CDG
             "-map", "0:a",          # audio from MP3
-            *pitch,
+            *_cdg_audio_filter(semitones),
+            "-g", "25",             # keyframe every ~1 s (CDG is 25 fps) so the
+                                    # last GOP is always ≤ 1 s and gets flushed
             "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23",
             "-c:a", "aac", "-b:a", "192k",
             "-f", "mp4", "-movflags", FRAG_FLAGS,
@@ -56,10 +80,12 @@ def _build_ffmpeg_cmd(song: dict, semitones: int = 0) -> list[str]:
     else:
         return [
             "ffmpeg", "-loglevel", loglevel,
+            "-fflags", "+genpts+discardcorrupt",  # regen PTS; drop bad packets (malformed AVI audio)
+            "-err_detect", "ignore_err",           # tolerate decode errors rather than aborting
             "-i", song["path"],
-            *pitch,
+            *_video_audio_filter(semitones),
             "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23",
-            "-c:a", "aac", "-b:a", "192k",
+            "-c:a", "aac", "-b:a", "192k", "-ac", "2",
             "-f", "mp4", "-movflags", FRAG_FLAGS,
             "pipe:1",
         ]
@@ -84,8 +110,9 @@ class StreamBroadcaster:
     done: bool = False
 
     def subscribe(self) -> asyncio.Queue:
-        # Queue size: 256 slots + room for replayed header chunks
-        q: asyncio.Queue = asyncio.Queue(maxsize=512)
+        # Large queue so ffmpeg can run at full speed and the browser pre-buffers
+        # the full stream.  2048 × 64 KB = 128 MB — enough for a ~60-min CDG set.
+        q: asyncio.Queue = asyncio.Queue(maxsize=2048)
         # Replay buffered header so late subscribers get a parseable stream start.
         # Safe without locks: asyncio is single-threaded; _pump only mutates
         # _header_buf between its own await points, never concurrently with this.
@@ -109,13 +136,26 @@ class StreamBroadcaster:
         log.info(f"[{label}] ffmpeg start: {shlex.join(cmd)}")
         try:
             self._process = await asyncio.create_subprocess_exec(
-                *cmd, stdout=PIPE, stderr=DEVNULL
+                *cmd, stdin=DEVNULL, stdout=PIPE, stderr=PIPE
             )
             buf_size = 0
+            chunk_count = 0
+            stderr_chunks: list[bytes] = []
+
+            async def _drain_stderr():
+                while True:
+                    piece = await self._process.stderr.read(4096)
+                    if not piece:
+                        break
+                    stderr_chunks.append(piece)
+
+            stderr_task = asyncio.create_task(_drain_stderr())
+
             while True:
                 chunk = await self._process.stdout.read(settings.stream_chunk_size)
                 if not chunk:
                     break
+                chunk_count += 1
                 # Buffer stream start so late-joining subscribers receive the
                 # initial ftyp+moov boxes and can parse the fragmented MP4.
                 if buf_size < _HEADER_BUF_BYTES:
@@ -127,8 +167,15 @@ class StreamBroadcaster:
                         q.put_nowait(chunk)
                     except asyncio.QueueFull:
                         log.warning(f"[{label}] subscriber queue full, dropping chunk")
+
+            await stderr_task
             await self._process.wait()
-            log.info(f"[{label}] ffmpeg exited with code {self._process.returncode}")
+            log.info(
+                f"[{label}] ffmpeg exited with code {self._process.returncode} "
+                f"after {chunk_count} chunks ({buf_size} bytes buffered)"
+            )
+            if stderr_chunks:
+                log.warning(f"[{label}] ffmpeg stderr: {b''.join(stderr_chunks).decode(errors='replace')}")
         except Exception as e:
             log.error(f"[{self.song_id}] ffmpeg pump error: {e}")
         finally:

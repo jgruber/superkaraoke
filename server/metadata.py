@@ -32,6 +32,8 @@ _TRAIL_SUFFIX = re.compile(
     r'\s*[-–]\s*(karaoke|instrumental|karaoke\s+version)\s*$',
     re.IGNORECASE,
 )
+# YouTube video ID appended to filename: "Title_dQw4w9WgXcQ" or "Title [dQw4w9WgXcQ]"
+_TRAIL_YTID = re.compile(r'[\s_]\[?[A-Za-z0-9_-]{11}\]?\s*$')
 
 
 def parse_filename(stem: str) -> dict:
@@ -44,6 +46,7 @@ def parse_filename(stem: str) -> dict:
     s = _TRACK_NUM.sub('', s).strip()
     s = _TRAIL_TAG.sub('', s).strip()
     s = _TRAIL_SUFFIX.sub('', s).strip()
+    s = _TRAIL_YTID.sub('', s).strip()
 
     if ' - ' in s:
         artist, title = s.split(' - ', 1)
@@ -66,16 +69,26 @@ def _first(val) -> str:
 def read_file_tags(file_path: str) -> dict:
     """
     Read embedded metadata from audio/video file via mutagen.
-    Returns a (possibly empty) dict with keys: title, artist, year, genre.
+    Returns a (possibly empty) dict with keys: title, artist, year, genre, duration_secs.
     """
     try:
         from mutagen import File as MutagenFile  # noqa: PLC0415
         mf = MutagenFile(file_path, easy=True)
-        if mf is None or mf.tags is None:
+        if mf is None:
             return {}
 
-        tags = mf.tags
         result: dict = {}
+
+        # Duration is always available via info, regardless of tags
+        if hasattr(mf, 'info') and mf.info and hasattr(mf.info, 'length'):
+            length = mf.info.length
+            if length and length > 0:
+                result['duration_secs'] = round(length, 2)
+
+        if mf.tags is None:
+            return result
+
+        tags = mf.tags
 
         if title := _first(tags.get('title')):
             result['title'] = title
@@ -109,17 +122,61 @@ def extract_metadata(file_path: str, cdg_path: Optional[str], kind: str,
     """
     parsed = parse_filename(Path(file_path).stem)
 
-    if kind == "video" or read_tags:
-        tags = read_file_tags(file_path)
-    else:
-        tags = {}
+    # Always read via mutagen — duration comes from audio info (fast header read).
+    # For CDG, tag fields (title/artist) are ignored in favour of filename parsing.
+    tags = read_file_tags(file_path)
 
     return {
-        'title':  tags.get('title')  or parsed.get('title')  or Path(file_path).stem,
-        'artist': tags.get('artist') or parsed.get('artist') or '',
-        'year':   tags.get('year'),
-        'genre':  tags.get('genre')  or '',
+        'title':        tags.get('title')  or parsed.get('title')  or Path(file_path).stem,
+        'artist':       tags.get('artist') or parsed.get('artist') or '',
+        'year':         tags.get('year'),
+        'genre':        tags.get('genre')  or '',
+        'duration_secs': tags.get('duration_secs'),
     }
+
+
+# ── MusicBrainz query helpers ─────────────────────────────────────────────────
+
+_STYLE_OF = re.compile(
+    r'^(.+?)\s+\(?\s*in\s+the\s+style\s+of\s+(.+?)\s*\)?\s*$',
+    re.IGNORECASE,
+)
+
+
+def strip_style_of(title: str) -> tuple[str, str]:
+    """
+    If *title* contains the karaoke convention '… in the style of Artist',
+    return (clean_title, artist).  Otherwise return (title, '').
+    """
+    m = _STYLE_OF.match(title.strip())
+    if m:
+        return m.group(1).strip(), m.group(2).strip()
+    return title, ''
+
+
+def clean_for_mb_query(title: str) -> tuple[str, str]:
+    """
+    Prepare a raw title string for a MusicBrainz query.
+    Strips YouTube ID suffixes, then extracts any 'in the style of Artist'.
+    Returns (clean_title, artist_hint).
+    """
+    title = _TRAIL_YTID.sub('', title).strip()
+    return strip_style_of(title)
+
+
+def pick_best_mb_match(candidates: list[dict], min_score: int = 100) -> Optional[dict]:
+    """
+    Return the best candidate at or above *min_score*, or None.
+    Only candidates at the top score are considered.
+    Among ties, prefer the earliest release year (no-year entries sort last).
+    """
+    eligible = [c for c in candidates if c.get("score", 0) >= min_score]
+    if not eligible:
+        return None
+    top_score = max(c["score"] for c in eligible)
+    top = [c for c in eligible if c["score"] == top_score]
+    top.sort(key=lambda c: (c.get("year") is None, c.get("year") or 0))
+    return top[0]
 
 
 # ── MusicBrainz lookup ─────────────────────────────────────────────────────────
