@@ -244,7 +244,7 @@ docker build -t superkaraoke .
 docker run -d \
   --name superkaraoke \
   -p 8080:8080 \
-  -v /path/to/your/karaoke:/media/karaoke:ro \
+  -v /path/to/your/karaoke:/media/karaoke \
   -v superkaraoke_data:/data \
   --restart unless-stopped \
   superkaraoke
@@ -263,7 +263,7 @@ services:
     ports:
       - "8080:8080"
     volumes:
-      - /path/to/your/karaoke:/media/karaoke:ro  # ← change this
+      - /path/to/your/karaoke:/media/karaoke  # ← change this
       - superkaraoke_data:/data
     environment:
       SK_MEDIA_DIR: /media/karaoke
@@ -287,7 +287,7 @@ docker compose pull && docker compose up -d   # update to latest image
 
 | Mount point | Purpose |
 |---|---|
-| `/media/karaoke` | Karaoke media files (CDG+MP3 pairs, video files). Mount read-only if you don't want the container writing to your library. |
+| `/media/karaoke` | Karaoke media files (CDG+MP3 pairs, video files). Must be read-write for MusicBrainz apply (file rename), MP4 conversion, and YouTube downloads. Add `:ro` only if you disable all library-editing features. |
 | `/data` | SQLite database (`superkaraoke.db`). Use a named volume or bind-mount a directory here so the library and like counts survive container restarts and image updates. |
 
 ### Environment variables in Docker
@@ -297,7 +297,7 @@ Pass any `SK_*` variable via `-e` or the `environment:` block in Compose:
 ```bash
 docker run -d \
   -p 8080:8080 \
-  -v /mnt/nas/karaoke:/media/karaoke:ro \
+  -v /mnt/nas/karaoke:/media/karaoke \
   -v superkaraoke_data:/data \
   -e SK_FFMPEG_LOGLEVEL=info \
   superkaraoke
