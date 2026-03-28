@@ -19,6 +19,12 @@ class Settings(BaseSettings):
     # Database
     db_path: Path = Path("superkaraoke.db")
 
+    # Auth — comma-separated CIDR subnets that skip authentication.
+    # Example: "192.168.1.0/24,10.0.0.0/8"
+    # Empty = all remote clients must log in (bootstrap mode allows open
+    # access until the first user account is created).
+    allowed_networks: str = ""
+
     # Streaming
     stream_chunk_size: int = 65536  # 64 KB
     ffmpeg_loglevel: str = "warning"

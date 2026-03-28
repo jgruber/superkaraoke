@@ -41,7 +41,8 @@ RUN mkdir -p /media/karaoke /data
 ENV SK_MEDIA_DIR=/media/karaoke \
     SK_DB_PATH=/data/superkaraoke.db \
     SK_HOST=0.0.0.0 \
-    SK_PORT=8080
+    SK_PORT=8080 \
+    SK_ALLOWED_NETWORKS=""
 
 EXPOSE 8080
 

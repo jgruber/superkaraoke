@@ -1,6 +1,7 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
+from ..auth import get_session_user
 from ..queue_manager import queue_manager
 from ..library import library
 
@@ -22,14 +23,16 @@ async def get_queue():
 
 
 @router.post("/queue")
-async def enqueue(req: EnqueueRequest):
+async def enqueue(req: EnqueueRequest, request: Request):
     song = await library.get(req.song_id)
     if not song:
         raise HTTPException(status_code=404, detail="Song not found")
+    # Authenticated session username always wins over the client-supplied value
+    user = get_session_user(request) or req.user
     if req.play_next:
-        entry = await queue_manager.enqueue_next(song, req.user)
+        entry = await queue_manager.enqueue_next(song, user)
     else:
-        entry = await queue_manager.enqueue(song, req.user)
+        entry = await queue_manager.enqueue(song, user)
     return entry.to_dict()
 
 

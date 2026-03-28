@@ -99,6 +99,7 @@ All settings can be set via environment variables with the `SK_` prefix, or in a
 | `SK_HOST` | `0.0.0.0` | Bind address |
 | `SK_DB_PATH` | `superkaraoke.db` | SQLite database file path |
 | `SK_FFMPEG_LOGLEVEL` | `warning` | ffmpeg log verbosity |
+| `SK_ALLOWED_NETWORKS` | `` | Comma-separated CIDR subnets that bypass authentication (e.g. `192.168.1.0/24,10.0.0.0/8`) |
 
 Example `.env`:
 
@@ -107,6 +108,61 @@ SK_MEDIA_DIR=/media/karaoke
 SK_PORT=8080
 SK_DB_PATH=/var/lib/superkaraoke/library.db
 ```
+
+---
+
+## Authentication
+
+SuperKaraoke supports optional per-user authentication for remote clients.
+
+### How it works
+
+| Client source | Access |
+|---|---|
+| IP in `SK_ALLOWED_NETWORKS` | Always allowed — no login required ("local" mode) |
+| Any IP (no networks configured) | Must log in with username + password |
+| No users created yet | **Bootstrap mode** — everyone is treated as local so you can reach the UI and create the first account |
+
+Local users still get the name-prompt when queueing a song (saved in `localStorage`). Authenticated users always queue under their login name — the client-supplied name is ignored.
+
+### Credentials file
+
+Accounts are stored in `credentials.json` in the same directory as the database (`/data/credentials.json` in Docker). Passwords are hashed with PBKDF2-SHA256 (stdlib — no extra dependencies).
+
+```json
+{
+  "users": {
+    "alice": { "password_hash": "pbkdf2:sha256:260000:<salt>:<hash>" },
+    "bob":   { "password_hash": "pbkdf2:sha256:260000:<salt>:<hash>" }
+  }
+}
+```
+
+### User management
+
+Click the **profile chip** (top-right of the queue page) → **Manage users** to open the user management modal. From there you can create accounts, change passwords, and delete users. The modal is available to:
+
+- Clients on an allowed network
+- Authenticated remote users (who can only change their own password unless on a local network)
+
+### Docker example with a local subnet
+
+```bash
+docker run -d \
+  --name superkaraoke \
+  -p 8080:8080 \
+  -v /path/to/your/karaoke:/media/karaoke \
+  -v superkaraoke_data:/data \
+  -e SK_ALLOWED_NETWORKS="192.168.1.0/24" \
+  --restart unless-stopped \
+  superkaraoke
+```
+
+Clients on `192.168.1.x` (your LAN) get in without a password. Everyone else sees the login screen.
+
+### Nginx note
+
+When running behind nginx on the same host, the direct TCP connection appears as `127.0.0.1`. SuperKaraoke automatically trusts `X-Forwarded-For` in that case, so the real client IP is used for network matching. For other proxy setups, add the proxy's IP to `SK_ALLOWED_NETWORKS` or ensure it forwards the real IP.
 
 ---
 
