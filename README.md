@@ -80,12 +80,14 @@ Open `http://localhost:8080` in a browser.
 ### CLI options
 
 ```
-python run.py [--host HOST] [--port PORT] [--media-dir PATH] [--reload]
+python run.py [--host HOST] [--port PORT] [--media-dir PATH] [--allowed-networks CIDRS] [--reload]
 
-  --host        Bind address (default: 0.0.0.0)
-  --port        HTTP port (default: 8080)
-  --media-dir   Path to karaoke media directory (default: /tmp/karaoke)
-  --reload      Enable auto-reload for development
+  --host              Bind address (default: 0.0.0.0)
+  --port              HTTP port (default: 8080)
+  --media-dir         Path to karaoke media directory (default: /tmp/karaoke)
+  --allowed-networks  Comma-separated CIDR subnets that skip authentication
+                      (e.g. "192.168.1.0/24,10.0.0.0/8")
+  --reload            Enable auto-reload for development
 ```
 
 ### Environment variables
