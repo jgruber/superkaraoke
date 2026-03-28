@@ -162,6 +162,86 @@ docker run -d \
 
 Clients on `192.168.x.x` (your LAN) get in without a password. Everyone else sees the login screen.
 
+### Managing users with manage_users.py
+
+The `library_scripts/manage_users.py` script lets you manage accounts from the command line without running the server — useful for initial setup, scripted provisioning, or recovering access.
+
+#### Running locally
+
+```bash
+# List all users
+python3 library_scripts/manage_users.py list
+
+# Add a user (interactive password prompt)
+python3 library_scripts/manage_users.py add alice
+
+# Add a user non-interactively (e.g. in a setup script)
+python3 library_scripts/manage_users.py add alice --password s3cr3t
+
+# Change a user's password
+python3 library_scripts/manage_users.py password alice
+
+# Remove a user (asks for confirmation)
+python3 library_scripts/manage_users.py remove alice
+```
+
+#### Running with Docker
+
+The `/data` volume must be mounted so the script can read and write `credentials.json`:
+
+```bash
+# List users
+docker run --rm \
+  -v superkaraoke_data:/data \
+  superkaraoke \
+  python3 library_scripts/manage_users.py list
+
+# Add a user non-interactively
+docker run --rm \
+  -v superkaraoke_data:/data \
+  superkaraoke \
+  python3 library_scripts/manage_users.py add alice --password s3cr3t
+
+# Change a password non-interactively
+docker run --rm \
+  -v superkaraoke_data:/data \
+  superkaraoke \
+  python3 library_scripts/manage_users.py password alice --password newpass
+
+# Remove a user (pipe 'y' to skip the confirmation prompt)
+docker run --rm -i \
+  -v superkaraoke_data:/data \
+  superkaraoke \
+  sh -c 'echo y | python3 library_scripts/manage_users.py remove alice'
+```
+
+For interactive use (password prompts), allocate a TTY:
+
+```bash
+docker run --rm -it \
+  -v superkaraoke_data:/data \
+  superkaraoke \
+  python3 library_scripts/manage_users.py add alice
+```
+
+#### CLI reference
+
+```
+python3 library_scripts/manage_users.py [--db PATH] COMMAND
+
+Commands:
+  list                    List all users
+  add USERNAME            Add a new user
+  password USERNAME       Change a user's password
+  remove USERNAME         Remove a user
+
+Options:
+  --db PATH               Path to superkaraoke.db (default: /data/superkaraoke.db)
+  --password PASSWORD     Supply password directly instead of being prompted
+```
+
+---
+
 ### Nginx note
 
 When running behind nginx on the same host, the direct TCP connection appears as `127.0.0.1`. SuperKaraoke automatically trusts `X-Forwarded-For` in that case, so the real client IP is used for network matching. For other proxy setups, add the proxy's IP to `SK_ALLOWED_NETWORKS` or ensure it forwards the real IP.
@@ -700,6 +780,7 @@ superkaraoke/
 │   └── vite.config.js
 ├── library_scripts/
 │   ├── convert_media.py   # Batch media conversion utility (video + CDG → MP4)
+│   ├── manage_users.py    # CLI tool to list/add/change-password/remove users
 │   ├── mb_fix.py          # MusicBrainz metadata enrichment + file rename
 │   ├── path_replace.py    # Replace file_path prefix in DB (for instance migration)
 │   └── sunfly_match.py    # Sunfly catalogue matching + file rename
