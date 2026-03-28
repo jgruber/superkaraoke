@@ -14,7 +14,7 @@ def main():
     parser.add_argument("--allowed-networks", default=None,
                         metavar="CIDRS",
                         help='Comma-separated CIDR subnets that skip authentication '
-                             '(e.g. "192.168.1.0/24,10.0.0.0/8")')
+                             '(e.g. "192.168.0.0/16,10.0.0.0/8")')
     parser.add_argument("--reload", action="store_true", help="Enable auto-reload (dev mode)")
     args = parser.parse_args()
 

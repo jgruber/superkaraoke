@@ -86,7 +86,7 @@ python run.py [--host HOST] [--port PORT] [--media-dir PATH] [--allowed-networks
   --port              HTTP port (default: 8080)
   --media-dir         Path to karaoke media directory (default: /tmp/karaoke)
   --allowed-networks  Comma-separated CIDR subnets that skip authentication
-                      (e.g. "192.168.1.0/24,10.0.0.0/8")
+                      (e.g. "192.168.0.0/16,10.0.0.0/8")
   --reload            Enable auto-reload for development
 ```
 
@@ -101,7 +101,7 @@ All settings can be set via environment variables with the `SK_` prefix, or in a
 | `SK_HOST` | `0.0.0.0` | Bind address |
 | `SK_DB_PATH` | `superkaraoke.db` | SQLite database file path |
 | `SK_FFMPEG_LOGLEVEL` | `warning` | ffmpeg log verbosity |
-| `SK_ALLOWED_NETWORKS` | `` | Comma-separated CIDR subnets that bypass authentication (e.g. `192.168.1.0/24,10.0.0.0/8`) |
+| `SK_ALLOWED_NETWORKS` | `192.168.0.0/16` | Comma-separated CIDR subnets that bypass authentication |
 
 Example `.env`:
 
@@ -155,12 +155,12 @@ docker run -d \
   -p 8080:8080 \
   -v /path/to/your/karaoke:/media/karaoke \
   -v superkaraoke_data:/data \
-  -e SK_ALLOWED_NETWORKS="192.168.1.0/24" \
+  -e SK_ALLOWED_NETWORKS="192.168.0.0/16" \
   --restart unless-stopped \
   superkaraoke
 ```
 
-Clients on `192.168.1.x` (your LAN) get in without a password. Everyone else sees the login screen.
+Clients on `192.168.x.x` (your LAN) get in without a password. Everyone else sees the login screen.
 
 ### Nginx note
 
