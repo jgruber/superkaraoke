@@ -55,8 +55,9 @@ function initApp() {
     loginLoading:   false,
 
     // Profile dropdown
-    profileOpen: false,
-    clientIp:    null,
+    profileOpen:     false,
+    clientIp:        null,
+    allowedNetworks: null,   // comma-separated CIDRs from server config
 
     // User management modal
     usersModal:      false,
@@ -102,10 +103,11 @@ function initApp() {
         const res  = await fetch('/api/auth/me')
         if (res.ok) {
           const d          = await res.json()
-          this.authUser    = d.username   || null
-          this.isLocal     = d.local     || false
-          this.isBootstrap = d.bootstrap || false
-          this.clientIp    = d.client_ip || null
+          this.authUser        = d.username         || null
+          this.isLocal         = d.local            || false
+          this.isBootstrap     = d.bootstrap        || false
+          this.clientIp        = d.client_ip        || null
+          this.allowedNetworks = d.allowed_networks || null
         } else if (res.status === 401) {
           this.showLogin = true
         }

@@ -408,6 +408,18 @@
 
       <div class="flex-1 overflow-y-auto px-5 py-4 flex flex-col gap-5">
 
+        <!-- ── Local networks ──────────────────────────────────────────── -->
+        <template x-if="allowedNetworks">
+          <section class="rounded-xl bg-gray-50 dark:bg-gray-800/50 border border-gray-200 dark:border-gray-700 px-4 py-3">
+            <p class="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-1.5">Local networks (no login required)</p>
+            <div class="flex flex-wrap gap-1.5">
+              <template x-for="net in allowedNetworks.split(',')" :key="net">
+                <span class="font-mono text-xs px-2 py-0.5 rounded-full bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-300" x-text="net.trim()"></span>
+              </template>
+            </div>
+          </section>
+        </template>
+
         <!-- ── Create user ──────────────────────────────────────────────── -->
         <section>
           <h3 class="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-3">Create user</h3>

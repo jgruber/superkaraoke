@@ -69,12 +69,24 @@ async def me(request: Request):
 
     # Bootstrap mode: no users configured yet → treat everyone as local
     if not has_any_users(settings.db_path):
-        return {"username": None, "local": True, "bootstrap": True, "client_ip": _client_ip(request)}
+        return {
+            "username": None,
+            "local": True,
+            "bootstrap": True,
+            "client_ip": _client_ip(request),
+            "allowed_networks": settings.allowed_networks,
+        }
 
     if not local and not username:
         raise HTTPException(status_code=401, detail="Not authenticated")
 
-    return {"username": username, "local": local, "bootstrap": False, "client_ip": _client_ip(request)}
+    return {
+        "username": username,
+        "local": local,
+        "bootstrap": False,
+        "client_ip": _client_ip(request),
+        "allowed_networks": settings.allowed_networks,
+    }
 
 
 # ── User management ───────────────────────────────────────────────────────────
