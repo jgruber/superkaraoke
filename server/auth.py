@@ -64,15 +64,19 @@ def _client_ip(request: Request) -> str:
     """
     Return the real client IP.
 
-    Trusts X-Forwarded-For only when the direct TCP connection is from
-    localhost — the common pattern when nginx sits on the same host.
+    The application is assumed to run behind a reverse proxy.  Headers are
+    checked in order of preference:
+      1. X-Forwarded-For  — leftmost (originating) address
+      2. X-Real-IP        — single-IP header set by some proxies (e.g. nginx)
+      3. direct TCP peer  — fallback when no proxy header is present
     """
-    direct = (request.client.host if request.client else "") or ""
-    if direct in ("127.0.0.1", "::1", "localhost"):
-        xff = request.headers.get("x-forwarded-for", "")
-        if xff:
-            return xff.split(",")[0].strip()
-    return direct
+    xff = request.headers.get("x-forwarded-for", "")
+    if xff:
+        return xff.split(",")[0].strip()
+    xri = request.headers.get("x-real-ip", "")
+    if xri:
+        return xri.strip()
+    return (request.client.host if request.client else "") or ""
 
 
 def is_local(request: Request, networks: list) -> bool:
