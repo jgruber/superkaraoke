@@ -92,6 +92,11 @@
           class="absolute right-0 mt-1 w-48 rounded-xl shadow-lg border border-gray-200 dark:border-gray-700
                  bg-white dark:bg-gray-900 py-1 z-50"
         >
+          <!-- Client IP -->
+          <template x-if="clientIp">
+            <div class="px-4 py-1.5 text-xs text-gray-400 dark:text-gray-500 font-mono" x-text="clientIp"></div>
+          </template>
+
           <!-- Local user options -->
           <template x-if="isLocal || isBootstrap">
             <button

@@ -18,6 +18,7 @@ from typing import Optional
 from ..auth import (
     authenticate, create_user, update_password, delete_user, list_users,
     create_session, clear_session, get_session_user, is_local, parse_networks,
+    _client_ip,
 )
 from ..config import settings
 
@@ -68,12 +69,12 @@ async def me(request: Request):
 
     # Bootstrap mode: no users configured yet → treat everyone as local
     if not has_any_users(settings.db_path):
-        return {"username": None, "local": True, "bootstrap": True}
+        return {"username": None, "local": True, "bootstrap": True, "client_ip": _client_ip(request)}
 
     if not local and not username:
         raise HTTPException(status_code=401, detail="Not authenticated")
 
-    return {"username": username, "local": local, "bootstrap": False}
+    return {"username": username, "local": local, "bootstrap": False, "client_ip": _client_ip(request)}
 
 
 # ── User management ───────────────────────────────────────────────────────────

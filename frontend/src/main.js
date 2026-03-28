@@ -56,6 +56,7 @@ function initApp() {
 
     // Profile dropdown
     profileOpen: false,
+    clientIp:    null,
 
     // User management modal
     usersModal:      false,
@@ -101,9 +102,10 @@ function initApp() {
         const res  = await fetch('/api/auth/me')
         if (res.ok) {
           const d          = await res.json()
-          this.authUser    = d.username || null
-          this.isLocal     = d.local    || false
+          this.authUser    = d.username   || null
+          this.isLocal     = d.local     || false
           this.isBootstrap = d.bootstrap || false
+          this.clientIp    = d.client_ip || null
         } else if (res.status === 401) {
           this.showLogin = true
         }
