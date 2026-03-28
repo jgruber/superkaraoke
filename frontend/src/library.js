@@ -53,6 +53,9 @@ function initLibrary() {
     mbFixTitle: '',
     mbFixArtist: '',
 
+    // Auth
+    authUser: null,   // username from session cookie (null = local / not logged in)
+
     // Enqueue modal (username prompt)
     enqueueModal: null,   // song waiting to be enqueued, or null
     enqueueUser: '',
@@ -67,10 +70,15 @@ function initLibrary() {
     _toastTimer: null,
 
     // ── Boot ──────────────────────────────────────────────────────────────
-    init() {
+    async init() {
       this.darkMode = localStorage.getItem('sk-theme') === 'dark' ||
         (!localStorage.getItem('sk-theme') && window.matchMedia('(prefers-color-scheme: dark)').matches)
       this._applyTheme()
+      const me = await fetch('/api/auth/me').catch(() => null)
+      if (me?.ok) {
+        const d = await me.json()
+        this.authUser = d.username || null
+      }
       this.fetchStats()
       this.fetchSongs()
     },
@@ -414,6 +422,10 @@ function initLibrary() {
 
     // ── Enqueue ───────────────────────────────────────────────────────────
     openEnqueue(song) {
+      if (this.authUser) {
+        this._enqueue(song, this.authUser)
+        return
+      }
       const saved = localStorage.getItem('sk-username')
       if (saved) {
         this._enqueue(song, saved)
