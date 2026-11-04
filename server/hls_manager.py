@@ -133,14 +133,35 @@ class HLSSession:
                 break
             stderr_chunks.append(piece)
         await self._process.wait()
-        self.done = True
         rc = self._process.returncode
+        # On normal completion, mark the playlist as VOD so hls.js knows
+        # the song is finished — otherwise the stream is treated as live
+        # forever and <video>.onended / BUFFER_EOS never fire.
+        if rc == 0:
+            self._finalize_playlist()
+        self.done = True
         log.info(f"[hls {self.session_id}] ffmpeg exited rc={rc}")
         if stderr_chunks and rc not in (0, -15, 255):
             log.warning(
                 f"[hls {self.session_id}] stderr: "
                 f"{b''.join(stderr_chunks).decode(errors='replace')}"
             )
+
+    def _finalize_playlist(self) -> None:
+        playlist = self.out_dir / "index.m3u8"
+        try:
+            text = playlist.read_text()
+        except OSError:
+            return
+        if "#EXT-X-ENDLIST" in text:
+            return
+        if not text.endswith("\n"):
+            text += "\n"
+        text += "#EXT-X-ENDLIST\n"
+        try:
+            playlist.write_text(text)
+        except OSError as e:
+            log.warning(f"[hls {self.session_id}] endlist write failed: {e}")
 
     async def wait_ready(self, timeout: float = 8.0) -> bool:
         """

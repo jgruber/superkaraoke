@@ -20,6 +20,10 @@ log = logging.getLogger(__name__)
 # (e.g. screen browser closed mid-song).  2 hours covers the longest karaoke set.
 _PLAY_TIMEOUT = 7200
 
+# When the last screen disconnects, wait this long for a reconnect
+# (browser refresh, fresh tab) before skipping the current song.
+_NO_SCREENS_GRACE = 10.0
+
 
 class QueueEntry:
     def __init__(self, song: dict, user: str):
@@ -53,6 +57,7 @@ class QueueManager:
         # Live playback state (while _play is running)
         self._current_session: Optional[HLSSession] = None
         self._current_pitch: int = 0
+        self._no_screens_task: Optional[asyncio.Task] = None
 
     # ── Queue mutations ──────────────────────────────────────────────────────
 
@@ -118,6 +123,33 @@ class QueueManager:
     def signal_song_ended(self):
         """Called when the screen reports that video playback has finished."""
         self._song_ended_event.set()
+
+    def handle_screen_count_change(self, screen_count: int) -> None:
+        """
+        Called after any screen WS connect/disconnect. If the last screen
+        is gone during playback, start a grace timer and skip the current
+        song if nobody reconnects in time; if a screen comes back, cancel
+        the pending skip.
+        """
+        if screen_count == 0 and self._now_playing:
+            if not self._no_screens_task or self._no_screens_task.done():
+                self._no_screens_task = asyncio.create_task(self._skip_after_grace())
+                log.info(
+                    f"No screens — will skip in {_NO_SCREENS_GRACE:.0f}s unless one reconnects"
+                )
+        elif screen_count > 0 and self._no_screens_task and not self._no_screens_task.done():
+            self._no_screens_task.cancel()
+            self._no_screens_task = None
+            log.info("Screen reconnected — pending skip cancelled")
+
+    async def _skip_after_grace(self) -> None:
+        try:
+            await asyncio.sleep(_NO_SCREENS_GRACE)
+        except asyncio.CancelledError:
+            return
+        if self._now_playing:
+            log.info("Grace expired with no screens — skipping current song")
+            self._skip_event.set()
 
     async def set_pitch(self, semitones: int) -> bool:
         """

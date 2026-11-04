@@ -32,6 +32,10 @@ async def websocket_endpoint(websocket: WebSocket):
     ws_manager._connections[websocket] = {"client_type": client_type, "name": name}
     log.info(f"WS registered: {client_type} '{name}'")
 
+    # A screen just (re)appeared — cancel any pending "no screens" skip.
+    if client_type == "screen":
+        queue_manager.handle_screen_count_change(ws_manager.screen_count())
+
     # Send current state immediately on connect
     await ws_manager.send(websocket, {
         "type": "state",
@@ -69,3 +73,5 @@ async def websocket_endpoint(websocket: WebSocket):
                 pass
     except WebSocketDisconnect:
         ws_manager.disconnect(websocket)
+        if client_type == "screen":
+            queue_manager.handle_screen_count_change(ws_manager.screen_count())

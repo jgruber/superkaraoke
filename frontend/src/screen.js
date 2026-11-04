@@ -247,21 +247,29 @@ function initScreen() {
       const isHls = /\.m3u8(\?|$)/.test(url)
       if (isHls && Hls.isSupported()) {
         const hls = new Hls({
-          // All screens target the tail of the growing playlist, keeping
-          // them tightly packed around the same live edge.
-          liveSyncDurationCount: 3,
-          liveMaxLatencyDurationCount: 10,
+          // The playlist is appended live, but every screen must play the
+          // song from the beginning — not the live edge. startPosition: 0
+          // pins the first loaded fragment to segment 0 regardless of how
+          // many segments ffmpeg has already written by the time we load.
+          startPosition: 0,
+          enableWorker: true,
           lowLatencyMode: false,
-          backBufferLength: 30,
-          maxBufferLength: 20,
+          backBufferLength: 90,
+          maxBufferLength: 30,
         })
         this._hls = hls
         hls.loadSource(url)
         hls.attachMedia(this.video)
+        hls.on(Hls.Events.BUFFER_EOS, () => {
+          // EXT-X-ENDLIST appeared and we played to the end — tell the server.
+          console.info('[hls] BUFFER_EOS — signalling song_ended')
+          if (this.ws?.readyState === WebSocket.OPEN) {
+            this.ws.send(JSON.stringify({ type: 'song_ended' }))
+          }
+        })
         hls.on(Hls.Events.ERROR, (_e, data) => {
           console.warn('[hls]', data.type, data.details, data.fatal ? '(fatal)' : '')
           if (data.fatal) {
-            // Attempt one recovery before giving up
             if (data.type === Hls.ErrorTypes.NETWORK_ERROR) hls.startLoad()
             else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) hls.recoverMediaError()
           }
