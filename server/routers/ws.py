@@ -1,5 +1,6 @@
 import json
 import logging
+import time
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
@@ -46,9 +47,24 @@ async def websocket_endpoint(websocket: WebSocket):
                 msg_type = msg.get("type")
                 if msg_type == "ping":
                     await ws_manager.send(websocket, {"type": "pong"})
+                elif msg_type == "time_sync":
+                    # NTP-lite: client sends t1 (client ms), server stamps
+                    # t2/t3 (server ms) so the client can compute its own
+                    # clock offset relative to the server.
+                    now_ms = time.time() * 1000.0
+                    await ws_manager.send(websocket, {
+                        "type": "time_sync",
+                        "t1": msg.get("t1"),
+                        "t2": now_ms,
+                        "t3": now_ms,
+                    })
                 elif msg_type == "song_ended":
                     # Screen reports that video playback has finished naturally
                     queue_manager.signal_song_ended()
+                elif msg_type == "set_pitch":
+                    # Screen asks the server to re-encode at a new pitch; all
+                    # screens receive a fresh 'play' message and reload.
+                    await queue_manager.set_pitch(msg.get("semitones", 0))
             except Exception:
                 pass
     except WebSocketDisconnect:

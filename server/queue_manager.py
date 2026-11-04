@@ -9,14 +9,12 @@ import time
 import uuid
 from typing import Optional
 
+from .config import settings
+from .hls_manager import HLSSession, hls_manager
 from .stream_manager import stream_manager
 from .ws_manager import ws_manager
 
 log = logging.getLogger(__name__)
-
-# Seconds all screens buffer before starting playback — gives late-connecting
-# screens time to load and ensures everyone starts at the same moment.
-BUFFER_DELAY = 0.0 
 
 # Safety timeout: advance queue even if the screen never signals song_ended
 # (e.g. screen browser closed mid-song).  2 hours covers the longest karaoke set.
@@ -50,7 +48,11 @@ class QueueManager:
         self._playback_task: Optional[asyncio.Task] = None
         self._skip_event = asyncio.Event()
         self._song_ended_event = asyncio.Event()
+        self._pitch_change_event = asyncio.Event()
         self._paused: bool = False
+        # Live playback state (while _play is running)
+        self._current_session: Optional[HLSSession] = None
+        self._current_pitch: int = 0
 
     # ── Queue mutations ──────────────────────────────────────────────────────
 
@@ -117,17 +119,40 @@ class QueueManager:
         """Called when the screen reports that video playback has finished."""
         self._song_ended_event.set()
 
+    async def set_pitch(self, semitones: int) -> bool:
+        """
+        Change the pitch of the currently-playing song. Triggers a fresh
+        HLS session at the new pitch and a new 'play' broadcast so every
+        screen reloads the new playlist in lock-step.
+        Returns True if a change was accepted (song is playing, value differs).
+        """
+        try:
+            semitones = int(semitones)
+        except (TypeError, ValueError):
+            return False
+        semitones = max(-12, min(12, semitones))
+        if not self._now_playing:
+            return False
+        if semitones == self._current_pitch:
+            return False
+        self._current_pitch = semitones
+        self._pitch_change_event.set()
+        return True
+
     def get_queue(self) -> list[dict]:
         return [e.to_dict() for e in self._queue]
 
     def now_playing(self) -> Optional[dict]:
         if self._now_playing:
             e = self._now_playing
+            sid = self._current_session.session_id if self._current_session else None
+            stream_url = f"/hls/{sid}/index.m3u8" if sid else None
             return {
                 **e.to_dict(),
-                "stream_url": f"/stream/{e.song['id']}",
+                "stream_url": stream_url,
                 "server_ts": e.server_ts,
                 "play_at": e.play_at,
+                "semitones": self._current_pitch,
                 "paused": self._paused,
             }
         return None
@@ -164,49 +189,72 @@ class QueueManager:
         song = entry.song
         log.info(f"Now playing: {song['title']} (requested by {entry.user})")
 
-        stream_url = f"/stream/{song['id']}"
-        now = time.time()
-        entry.server_ts = now
-        entry.play_at = now + BUFFER_DELAY
-        play_msg = {
-            "type": "play",
-            "queue_id": entry.id,
-            "song": {
-                "id": song["id"],
-                "title": song["title"],
-                "artist": song["artist"],
-                "likes": song["likes"],
-            },
-            "stream_url": stream_url,
-            "user": entry.user,
-            "server_ts": now,
-            "play_at": now + BUFFER_DELAY,  # all screens start playback simultaneously
-            "duration_secs": song.get("duration_secs"),
-        }
-        await ws_manager.broadcast(play_msg)
-
-        # Wait until the screen signals the song ended, the user skips,
-        # or the safety timeout fires.  The broadcaster (if any) is NOT used
-        # for timing — it may finish well before real-time for CDG files.
+        self._current_pitch = 0
         self._skip_event.clear()
         self._song_ended_event.clear()
 
-        done, pending = await asyncio.wait(
-            [
-                asyncio.create_task(self._skip_event.wait()),
-                asyncio.create_task(self._song_ended_event.wait()),
-            ],
-            return_when=asyncio.FIRST_COMPLETED,
-            timeout=_PLAY_TIMEOUT,
-        )
-        for t in pending:
-            t.cancel()
+        # Each loop iteration is one HLS session. A pitch change restarts
+        # the song at the new pitch with a fresh session + 'play' broadcast.
+        while True:
+            self._pitch_change_event.clear()
 
-        if not done:
-            log.warning(f"[{song['id']}] play timeout after {_PLAY_TIMEOUT}s, advancing queue")
+            session = await hls_manager.start(song, semitones=self._current_pitch)
+            ready = await session.wait_ready(timeout=settings.hls_ready_timeout)
+            if not ready:
+                log.error(
+                    f"[hls {session.session_id}] playlist never appeared for "
+                    f"{song['id']}; advancing queue"
+                )
+                await hls_manager.stop(session.session_id)
+                return
+            self._current_session = session
 
-        # Stop every semitone variant for this song
-        await stream_manager.stop_all_for_song(song["id"])
+            now = time.time()
+            entry.server_ts = now
+            entry.play_at = now + settings.hls_prebuffer_secs
+            play_msg = {
+                "type": "play",
+                "queue_id": entry.id,
+                "song": {
+                    "id": song["id"],
+                    "title": song["title"],
+                    "artist": song["artist"],
+                    "likes": song["likes"],
+                },
+                "stream_url": f"/hls/{session.session_id}/index.m3u8",
+                "user": entry.user,
+                "server_ts": now,
+                "play_at": entry.play_at,
+                "semitones": self._current_pitch,
+                "duration_secs": song.get("duration_secs"),
+            }
+            await ws_manager.broadcast(play_msg)
+
+            done, pending = await asyncio.wait(
+                [
+                    asyncio.create_task(self._skip_event.wait()),
+                    asyncio.create_task(self._song_ended_event.wait()),
+                    asyncio.create_task(self._pitch_change_event.wait()),
+                ],
+                return_when=asyncio.FIRST_COMPLETED,
+                timeout=_PLAY_TIMEOUT,
+            )
+            for t in pending:
+                t.cancel()
+
+            # Tear the session down before any next step (pitch restart or exit).
+            await hls_manager.stop(session.session_id)
+            self._current_session = None
+
+            if self._pitch_change_event.is_set() and not self._skip_event.is_set():
+                log.info(f"[{song['id']}] pitch change → {self._current_pitch:+d}st, restarting")
+                continue
+
+            if not done:
+                log.warning(
+                    f"[{song['id']}] play timeout after {_PLAY_TIMEOUT}s, advancing queue"
+                )
+            return
 
     # ── Broadcast helpers ────────────────────────────────────────────────────
 

@@ -17,6 +17,7 @@
   },
   "dependencies": {
     "alpinejs": "^3.14.1",
+    "hls.js": "^1.7.4",
     "qrcode": "^1.5.4"
   }
 }

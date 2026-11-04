@@ -11,9 +11,15 @@ from .auth import is_local, get_session_user, parse_networks, has_any_users
 from .config import settings
 from .database import init_db
 from .library import library
+from .hls_manager import hls_manager
 from .stream_manager import stream_manager
 from .queue_manager import queue_manager
-from .routers import songs, queue, stream, ws, library as library_router, youtube as youtube_router
+from .routers import (
+    hls as hls_router,
+    songs, queue, stream, ws,
+    library as library_router,
+    youtube as youtube_router,
+)
 from .routers.auth import router as auth_router
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
@@ -31,6 +37,7 @@ async def lifespan(app: FastAPI):
     log.info("Server ready. Library scan running in background (%s)", settings.media_dir)
     yield
     library.stop_watcher()
+    await hls_manager.shutdown()
     await stream_manager.shutdown()
 
 
@@ -44,7 +51,8 @@ app = FastAPI(title="SuperKaraoke", lifespan=lifespan)
 _EXEMPT_PREFIXES = (
     "/api/auth/",   # login, logout, me — always open
     "/ws",          # WebSocket
-    "/stream/",     # media streams
+    "/stream/",     # legacy media streams
+    "/hls/",        # live HLS playlists + segments
     "/health",
     "/assets/",
     "/favicon",
@@ -84,6 +92,7 @@ app.include_router(queue.router,          prefix="/api")
 app.include_router(library_router.router, prefix="/api")
 app.include_router(youtube_router.router, prefix="/api")
 app.include_router(stream.router)
+app.include_router(hls_router.router)
 app.include_router(ws.router)
 
 # ── Static / HTML ─────────────────────────────────────────────────────────────
