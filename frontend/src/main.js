@@ -28,6 +28,8 @@ function initApp() {
     queue:      [],
     nowPlaying: null,
     paused:     false,
+    semitones:  0,     // current playback pitch (server-side, global)
+    avOffsetMs: 0,     // current A/V sync offset in ms (server-side, global)
 
     // Enqueue modal
     modal:     null,   // song being confirmed
@@ -46,6 +48,9 @@ function initApp() {
     isLocal:     false,  // true = client IP is in allowed_networks
     isBootstrap: false,  // true = no users exist yet
     authReady:   false,  // true once /api/auth/me has responded
+    agentKey:    null,   // 6-char bearer token for the MCP endpoint
+    agentKeyRotating: false,
+    agentKeyCopied:   false,
 
     // Login modal
     showLogin:      false,
@@ -53,6 +58,9 @@ function initApp() {
     loginPass:      '',
     loginError:     null,
     loginLoading:   false,
+
+    // Settings dropdown (gear)
+    settingsOpen:    false,
 
     // Profile dropdown
     profileOpen:     false,
@@ -108,6 +116,7 @@ function initApp() {
           this.isBootstrap     = d.bootstrap        || false
           this.clientIp        = d.client_ip        || null
           this.allowedNetworks = d.allowed_networks || null
+          this.agentKey        = d.agent_key        || null
         } else if (res.status === 401) {
           this.showLogin = true
         }
@@ -135,6 +144,7 @@ function initApp() {
         }
         const d = await res.json()
         this.authUser  = d.username
+        this.agentKey  = d.agent_key || null
         this.isLocal   = false
         this.showLogin = false
         this.loginUser = ''
@@ -149,9 +159,43 @@ function initApp() {
     async logout() {
       await fetch('/api/auth/logout', { method: 'POST' })
       this.authUser    = null
+      this.agentKey    = null
       this.isLocal     = false
       this.profileOpen = false
       this.showLogin   = true
+    },
+
+    // ── Agent key (bearer token for the MCP endpoint) ──────────────────────
+    async copyAgentKey() {
+      if (!this.agentKey) return
+      try {
+        await navigator.clipboard.writeText(this.agentKey)
+        this.agentKeyCopied = true
+        setTimeout(() => { this.agentKeyCopied = false }, 1500)
+      } catch (_) {
+        // Fallback: select-all via a temporary input
+        const i = document.createElement('input')
+        i.value = this.agentKey
+        document.body.appendChild(i)
+        i.select()
+        try { document.execCommand('copy') } catch (_) {}
+        document.body.removeChild(i)
+        this.agentKeyCopied = true
+        setTimeout(() => { this.agentKeyCopied = false }, 1500)
+      }
+    },
+
+    async rotateAgentKey() {
+      if (this.agentKeyRotating) return
+      this.agentKeyRotating = true
+      try {
+        const res = await fetch('/api/auth/agent-key/rotate', { method: 'POST' })
+        if (res.ok) {
+          const d = await res.json()
+          this.agentKey = d.agent_key
+        }
+      } catch (_) { /* swallow */ }
+      finally { this.agentKeyRotating = false }
     },
 
     // ── Profile dropdown ───────────────────────────────────────────────────
@@ -286,11 +330,10 @@ function initApp() {
     // ── WebSocket ──────────────────────────────────────────────────────────
     _connectWS() {
       const proto = location.protocol === 'https:' ? 'wss' : 'ws'
-      this.ws = new WebSocket(`${proto}://${location.host}/ws`)
+      this.ws = new WebSocket(`${proto}://${location.host}/ws?client_type=user`)
 
       this.ws.onopen = () => {
         this.connected = true
-        this.ws.send(JSON.stringify({ client_type: 'user', name: '' }))
       }
 
       this.ws.onmessage = (ev) => {
@@ -314,9 +357,17 @@ function initApp() {
         this.queue      = msg.queue       || []
         this.nowPlaying = msg.now_playing || null
         this.paused     = msg.now_playing?.paused || false
+        if (msg.now_playing) {
+          if (typeof msg.now_playing.semitones === 'number')
+            this.semitones = msg.now_playing.semitones
+          if (typeof msg.now_playing.av_offset_ms === 'number')
+            this.avOffsetMs = msg.now_playing.av_offset_ms
+        }
       } else if (msg.type === 'play') {
         this.nowPlaying = msg
         this.paused     = false
+        if (typeof msg.semitones === 'number')   this.semitones  = msg.semitones
+        if (typeof msg.av_offset_ms === 'number') this.avOffsetMs = msg.av_offset_ms
       } else if (msg.type === 'pause') {
         this.paused = true
       } else if (msg.type === 'resume') {
@@ -324,6 +375,42 @@ function initApp() {
       } else if (msg.type === 'stop') {
         this.nowPlaying = null
         this.paused     = false
+      }
+    },
+
+    // ── Playback tweakables (pitch, A/V offset) ────────────────────────────
+    // These are server-side global settings — a single send triggers an
+    // ffmpeg restart and a fresh 'play' broadcast to every screen.
+
+    adjustPitch(delta) {
+      const next = Math.max(-12, Math.min(12, (this.semitones || 0) + delta))
+      if (next === this.semitones) return
+      this.semitones = next
+      this._sendWS({ type: 'set_pitch', semitones: next })
+    },
+
+    resetPitch() {
+      if (this.semitones === 0) return
+      this.semitones = 0
+      this._sendWS({ type: 'set_pitch', semitones: 0 })
+    },
+
+    adjustAvOffset(deltaMs) {
+      const next = Math.max(-2000, Math.min(2000, (this.avOffsetMs || 0) + deltaMs))
+      if (next === this.avOffsetMs) return
+      this.avOffsetMs = next
+      this._sendWS({ type: 'set_av_offset', offset_ms: next })
+    },
+
+    resetAvOffset() {
+      if (this.avOffsetMs === 0) return
+      this.avOffsetMs = 0
+      this._sendWS({ type: 'set_av_offset', offset_ms: 0 })
+    },
+
+    _sendWS(payload) {
+      if (this.ws?.readyState === WebSocket.OPEN) {
+        this.ws.send(JSON.stringify(payload))
       }
     },
 

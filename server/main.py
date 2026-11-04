@@ -15,7 +15,9 @@ from .hls_manager import hls_manager
 from .stream_manager import stream_manager
 from .queue_manager import queue_manager
 from .routers import (
+    calibrate as calibrate_router,
     hls as hls_router,
+    mcp as mcp_router,
     songs, queue, stream, ws,
     library as library_router,
     youtube as youtube_router,
@@ -53,6 +55,7 @@ _EXEMPT_PREFIXES = (
     "/ws",          # WebSocket
     "/stream/",     # legacy media streams
     "/hls/",        # live HLS playlists + segments
+    "/mcp",         # MCP endpoint — auth happens via Bearer agent key inside
     "/health",
     "/assets/",
     "/favicon",
@@ -86,11 +89,13 @@ async def auth_middleware(request: Request, call_next):
 
 # ── Routers ───────────────────────────────────────────────────────────────────
 
-app.include_router(auth_router,           prefix="/api")
-app.include_router(songs.router,          prefix="/api")
-app.include_router(queue.router,          prefix="/api")
-app.include_router(library_router.router, prefix="/api")
-app.include_router(youtube_router.router, prefix="/api")
+app.include_router(auth_router,             prefix="/api")
+app.include_router(songs.router,            prefix="/api")
+app.include_router(queue.router,            prefix="/api")
+app.include_router(library_router.router,   prefix="/api")
+app.include_router(youtube_router.router,   prefix="/api")
+app.include_router(calibrate_router.router, prefix="/api")
+app.include_router(mcp_router.router)   # /mcp (no /api prefix — MCP convention)
 app.include_router(stream.router)
 app.include_router(hls_router.router)
 app.include_router(ws.router)
@@ -117,6 +122,10 @@ if _static_dir.exists():
     @app.get("/library")
     async def library_page():
         return FileResponse(str(_static_dir / "library.html"))
+
+    @app.get("/calibrate")
+    async def calibrate_page():
+        return FileResponse(str(_static_dir / "calibrate.html"))
 
 else:
     @app.get("/")

@@ -18,7 +18,7 @@ from typing import Optional
 from ..auth import (
     authenticate, create_user, update_password, delete_user, list_users,
     create_session, clear_session, get_session_user, is_local, parse_networks,
-    _client_ip,
+    _client_ip, ensure_agent_key, rotate_agent_key, revoke_agent_key,
 )
 from ..config import settings
 
@@ -48,16 +48,37 @@ class LoginBody(BaseModel):
 
 @router.post("/auth/login")
 async def login(body: LoginBody, response: Response):
-    if not authenticate(settings.db_path, body.username.strip(), body.password):
+    username = body.username.strip()
+    if not authenticate(settings.db_path, username, body.password):
         raise HTTPException(status_code=401, detail="Invalid credentials")
-    create_session(response, body.username.strip())
-    return {"username": body.username.strip()}
+    create_session(response, username)
+    return {"username": username, "agent_key": ensure_agent_key(username)}
 
 
 @router.post("/auth/logout")
 async def logout(request: Request, response: Response):
+    username = get_session_user(request)
+    if username:
+        revoke_agent_key(username)
     clear_session(request, response)
     return {"ok": True}
+
+
+def _agent_key_identity(request: Request) -> Optional[str]:
+    """
+    Return the identity string we mint an agent key under:
+      - real logged-in users → their username
+      - local-bypass users   → "local:<client-ip>"
+      - everyone else        → None (no key)
+    """
+    username = get_session_user(request)
+    if username:
+        return username
+    if is_local(request, _networks()):
+        ip = _client_ip(request)
+        if ip:
+            return f"local:{ip}"
+    return None
 
 
 @router.get("/auth/me")
@@ -66,27 +87,42 @@ async def me(request: Request):
     networks = _networks()
     local    = is_local(request, networks)
     username = get_session_user(request)
+    client_ip = _client_ip(request)
 
     # Bootstrap mode: no users configured yet → treat everyone as local
     if not has_any_users(settings.db_path):
+        bootstrap_identity = f"local:{client_ip}" if client_ip else None
         return {
             "username": None,
             "local": True,
             "bootstrap": True,
-            "client_ip": _client_ip(request),
+            "client_ip": client_ip,
             "allowed_networks": settings.allowed_networks,
+            "agent_key": ensure_agent_key(bootstrap_identity) if bootstrap_identity else None,
         }
 
     if not local and not username:
         raise HTTPException(status_code=401, detail="Not authenticated")
 
+    identity = _agent_key_identity(request)
     return {
         "username": username,
         "local": local,
         "bootstrap": False,
-        "client_ip": _client_ip(request),
+        "client_ip": client_ip,
         "allowed_networks": settings.allowed_networks,
+        "agent_key": ensure_agent_key(identity) if identity else None,
     }
+
+
+# ── Agent key (per-identity bearer token for the MCP endpoint) ───────────────
+
+@router.post("/auth/agent-key/rotate")
+async def rotate_my_agent_key(request: Request):
+    identity = _agent_key_identity(request)
+    if not identity:
+        raise HTTPException(status_code=401, detail="Login or local access required")
+    return {"agent_key": rotate_agent_key(identity)}
 
 
 # ── User management ───────────────────────────────────────────────────────────

@@ -152,39 +152,6 @@
         </div>
       </template>
 
-      <!-- Bottom-left: pitch control -->
-      <div class="absolute bottom-5 left-5 pointer-events-auto">
-        <div class="bg-black/60 backdrop-blur-sm rounded-xl px-3 py-2 flex items-center gap-2">
-          <button
-            @click="adjustPitch(-1)"
-            :disabled="semitones <= -12"
-            class="w-7 h-7 rounded-lg flex items-center justify-center text-white hover:bg-white/20 disabled:opacity-30 transition-colors text-lg leading-none"
-            title="Pitch down"
-          >♭</button>
-
-          <div class="text-center min-w-[3rem]">
-            <p class="text-xs text-gray-400 uppercase tracking-widest leading-none mb-0.5">Key</p>
-            <p
-              class="text-white font-mono font-semibold text-sm leading-none"
-              x-text="semitones === 0 ? '0' : (semitones > 0 ? '+' : '') + semitones"
-            ></p>
-          </div>
-
-          <button
-            @click="adjustPitch(1)"
-            :disabled="semitones >= 12"
-            class="w-7 h-7 rounded-lg flex items-center justify-center text-white hover:bg-white/20 disabled:opacity-30 transition-colors text-lg leading-none"
-            title="Pitch up"
-          >♯</button>
-
-          <button
-            x-show="semitones !== 0"
-            @click="resetPitch()"
-            class="ml-1 text-xs text-gray-400 hover:text-white transition-colors"
-            title="Reset pitch"
-          >↺</button>
-        </div>
-      </div>
     </div>
 
     <!-- Tap-to-start overlay (autoplay blocked) -->

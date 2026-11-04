@@ -13,22 +13,16 @@ log = logging.getLogger(__name__)
 
 @router.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
-    # Accept with a temporary connection, wait for hello
-    await websocket.accept()
-
-    # Expect first message to identify client type
-    try:
-        raw = await websocket.receive_text()
-        data = json.loads(raw)
-        client_type = data.get("client_type", "user")
-        name = data.get("name", "")
-    except WebSocketDisconnect:
-        return
-    except Exception:
+    # Identify the client via query string so we don't depend on an initial
+    # "hello" message. send() right after onopen can race the WS handshake
+    # and fail with CONNECTING state, which used to mis-register screens
+    # as users and broke the no-screens auto-skip.
+    client_type = websocket.query_params.get("client_type", "user")
+    if client_type not in ("screen", "user"):
         client_type = "user"
-        name = ""
+    name = websocket.query_params.get("name", "")
 
-    # Re-register with proper metadata (already accepted above, update registry)
+    await websocket.accept()
     ws_manager._connections[websocket] = {"client_type": client_type, "name": name}
     log.info(f"WS registered: {client_type} '{name}'")
 
@@ -66,9 +60,12 @@ async def websocket_endpoint(websocket: WebSocket):
                     # Screen reports that video playback has finished naturally
                     queue_manager.signal_song_ended()
                 elif msg_type == "set_pitch":
-                    # Screen asks the server to re-encode at a new pitch; all
-                    # screens receive a fresh 'play' message and reload.
+                    # Operator asks the server to re-encode at a new pitch;
+                    # all screens receive a fresh 'play' message and reload.
                     await queue_manager.set_pitch(msg.get("semitones", 0))
+                elif msg_type == "set_av_offset":
+                    # Operator nudges audio relative to video (ms).
+                    await queue_manager.set_av_offset(msg.get("offset_ms", 0))
             except Exception:
                 pass
     except WebSocketDisconnect:

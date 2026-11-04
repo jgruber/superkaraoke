@@ -50,6 +50,7 @@ function initScreen() {
     video: null,
     ws: null,
     _hls: null,
+    _currentStreamUrl: null,  // dedupe repeated 'play' broadcasts with same URL
     _pingInterval: null,
     _timesyncInterval: null,
 
@@ -84,16 +85,11 @@ function initScreen() {
 
     _connect() {
       const proto = location.protocol === 'https:' ? 'wss' : 'ws'
-      this.ws = new WebSocket(`${proto}://${location.host}/ws`)
+      this.ws = new WebSocket(`${proto}://${location.host}/ws?client_type=screen&name=display`)
 
       this.ws.onopen = () => {
         this.connected = true
         this.error = null
-        try {
-          this.ws.send(JSON.stringify({ client_type: 'screen', name: 'display' }))
-        } catch (e) {
-          console.warn('WS send failed on open:', e)
-        }
         this._startTimeSync()
       }
 
@@ -153,6 +149,9 @@ function initScreen() {
 
     // ── WS message dispatch ────────────────────────────────────────────────
     _handle(msg) {
+      if (msg.type !== 'time_sync' && msg.type !== 'pong') {
+        console.info('[ws]', msg.type, msg)
+      }
       switch (msg.type) {
         case 'time_sync':
           this._recordTimeSync(msg)
@@ -211,6 +210,15 @@ function initScreen() {
       this._serverTs = (msg.server_ts || 0) * 1000
       this._duration = msg.duration_secs || 0
       if (!msg.stream_url) return
+      // Re-broadcasting the same stream_url (e.g. a redundant queue_update
+      // translated into play) must NOT tear down and re-attach hls.js —
+      // that would restart playback from segment 0 and look like a loop.
+      if (msg.stream_url === this._currentStreamUrl) {
+        console.info('[play] same stream_url, only rescheduling')
+        this._schedulePlay()
+        return
+      }
+      this._currentStreamUrl = msg.stream_url
       this._loadVideo(msg.stream_url)
     },
 
@@ -222,6 +230,7 @@ function initScreen() {
     },
 
     _loadVideo(url) {
+      console.info('[load] new stream:', url)
       this.video.pause()
       clearTimeout(this._playTimer)
       this._destroyHls()
@@ -238,37 +247,44 @@ function initScreen() {
         }
       }
       this.video.onended = () => {
-        console.info('Video ended — signalling server')
+        console.info('[video] onended @ currentTime=' + this.video.currentTime)
         if (this.ws?.readyState === WebSocket.OPEN) {
           this.ws.send(JSON.stringify({ type: 'song_ended' }))
         }
+      }
+      this.video.onseeked = () => {
+        console.info('[video] seeked → ' + this.video.currentTime.toFixed(2))
+      }
+      this.video.onwaiting = () => {
+        console.info('[video] waiting (buffer underrun) @ ' + this.video.currentTime.toFixed(2))
       }
 
       const isHls = /\.m3u8(\?|$)/.test(url)
       if (isHls && Hls.isSupported()) {
         const hls = new Hls({
-          // The playlist is appended live, but every screen must play the
-          // song from the beginning — not the live edge. startPosition: 0
-          // pins the first loaded fragment to segment 0 regardless of how
-          // many segments ffmpeg has already written by the time we load.
+          // ffmpeg writes segments as fast as it can and appends
+          // #EXT-X-ENDLIST on exit. The playlist is always further
+          // ahead than playback, so even during the brief "still live"
+          // window the live-edge heuristics don't fight us.
           startPosition: 0,
+          maxLiveSyncPlaybackRate: 1,
           enableWorker: true,
           lowLatencyMode: false,
           backBufferLength: 90,
-          maxBufferLength: 30,
+          maxBufferLength: 60,
+          debug: false,
         })
         this._hls = hls
         hls.loadSource(url)
         hls.attachMedia(this.video)
-        hls.on(Hls.Events.BUFFER_EOS, () => {
-          // EXT-X-ENDLIST appeared and we played to the end — tell the server.
-          console.info('[hls] BUFFER_EOS — signalling song_ended')
-          if (this.ws?.readyState === WebSocket.OPEN) {
-            this.ws.send(JSON.stringify({ type: 'song_ended' }))
-          }
-        })
+        // BUFFER_EOS fires when hls.js finishes LOADING the last
+        // fragment into the source buffer, which — now that ffmpeg
+        // runs at full speed — happens many seconds before the <video>
+        // element actually plays through the song. Rely on the native
+        // 'ended' event instead, which fires once currentTime reaches
+        // the duration set by #EXT-X-ENDLIST.
         hls.on(Hls.Events.ERROR, (_e, data) => {
-          console.warn('[hls]', data.type, data.details, data.fatal ? '(fatal)' : '')
+          console.warn('[hls] ERROR', data.type, data.details, data.fatal ? '(fatal)' : '')
           if (data.fatal) {
             if (data.type === Hls.ErrorTypes.NETWORK_ERROR) hls.startLoad()
             else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) hls.recoverMediaError()
@@ -317,26 +333,10 @@ function initScreen() {
       }
     },
 
-    adjustPitch(delta) {
-      const next = Math.max(-12, Math.min(12, this.semitones + delta))
-      if (next === this.semitones) return
-      // Pitch is a server-side decision now — ask the server to re-encode.
-      // The server broadcasts a fresh 'play' to every screen so they all
-      // reload the new stream in lock-step.
-      if (this.ws?.readyState === WebSocket.OPEN) {
-        this.ws.send(JSON.stringify({ type: 'set_pitch', semitones: next }))
-      }
-    },
-
-    resetPitch() {
-      if (this.semitones === 0) return
-      if (this.ws?.readyState === WebSocket.OPEN) {
-        this.ws.send(JSON.stringify({ type: 'set_pitch', semitones: 0 }))
-      }
-    },
-
     _stopPlayback() {
+      console.info('[stop] playback cleared')
       this._pendingPlay = false
+      this._currentStreamUrl = null
       this.playProgress = 0
       this._duration = 0
       clearTimeout(this._playTimer)

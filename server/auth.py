@@ -129,6 +129,57 @@ def clear_session(request: Request, response: Response) -> None:
     response.delete_cookie(_COOKIE)
 
 
+# ── Per-user agent key ────────────────────────────────────────────────────────
+# A short bearer token the logged-in user hands to an AI agent so it can hit
+# the MCP endpoint on their behalf. 6 characters from [A-Z0-9], lives in
+# memory, rotated on demand.
+
+import random
+import string
+
+_AGENT_ALPHABET = string.ascii_uppercase + string.digits
+_agent_keys: dict[str, str] = {}          # key → username
+_agent_keys_by_user: dict[str, str] = {}  # username → key
+
+
+def _mint_agent_key() -> str:
+    while True:
+        k = "".join(random.choices(_AGENT_ALPHABET, k=6))
+        if k not in _agent_keys:
+            return k
+
+
+def ensure_agent_key(username: str) -> str:
+    """Return the current agent key for a user, minting one if needed."""
+    if username in _agent_keys_by_user:
+        return _agent_keys_by_user[username]
+    key = _mint_agent_key()
+    _agent_keys[key] = username
+    _agent_keys_by_user[username] = key
+    return key
+
+
+def rotate_agent_key(username: str) -> str:
+    """Revoke the user's current key and mint a fresh one."""
+    old = _agent_keys_by_user.pop(username, None)
+    if old is not None:
+        _agent_keys.pop(old, None)
+    return ensure_agent_key(username)
+
+
+def revoke_agent_key(username: str) -> None:
+    old = _agent_keys_by_user.pop(username, None)
+    if old is not None:
+        _agent_keys.pop(old, None)
+
+
+def agent_key_user(key: str) -> Optional[str]:
+    """Return the username this key belongs to, or None if unknown."""
+    if not key:
+        return None
+    return _agent_keys.get(key.strip())
+
+
 # ── Credentials file ──────────────────────────────────────────────────────────
 
 def _creds_path(db_path: Path) -> Path:

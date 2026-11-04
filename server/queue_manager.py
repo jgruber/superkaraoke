@@ -52,11 +52,14 @@ class QueueManager:
         self._playback_task: Optional[asyncio.Task] = None
         self._skip_event = asyncio.Event()
         self._song_ended_event = asyncio.Event()
-        self._pitch_change_event = asyncio.Event()
+        self._restart_event = asyncio.Event()
         self._paused: bool = False
         # Live playback state (while _play is running)
         self._current_session: Optional[HLSSession] = None
         self._current_pitch: int = 0
+        # A/V offset (ms). Positive = delay audio, negative = advance audio.
+        # Persists across songs so a one-time calibration stays applied.
+        self._av_offset_ms: int = 0
         self._no_screens_task: Optional[asyncio.Task] = None
 
     # ── Queue mutations ──────────────────────────────────────────────────────
@@ -104,6 +107,28 @@ class QueueManager:
             self._queue[idx], self._queue[idx + 1] = self._queue[idx + 1], self._queue[idx]
         await self._broadcast_queue()
         return True
+
+    async def clear(self) -> int:
+        """Remove every pending entry. Does NOT skip the current song."""
+        async with self._lock:
+            n = len(self._queue)
+            self._queue = []
+            self._event.clear()
+        if n > 0:
+            await self._broadcast_queue()
+        return n
+
+    async def remove_user_entries(self, user: str) -> int:
+        """Remove all pending entries queued by `user`."""
+        async with self._lock:
+            before = len(self._queue)
+            self._queue = [e for e in self._queue if e.user != user]
+            removed = before - len(self._queue)
+            if not self._queue:
+                self._event.clear()
+        if removed > 0:
+            await self._broadcast_queue()
+        return removed
 
     async def skip(self):
         self._skip_event.set()
@@ -168,7 +193,25 @@ class QueueManager:
         if semitones == self._current_pitch:
             return False
         self._current_pitch = semitones
-        self._pitch_change_event.set()
+        self._restart_event.set()
+        return True
+
+    async def set_av_offset(self, offset_ms: int) -> bool:
+        """Change the audio/video sync offset (in milliseconds)."""
+        try:
+            offset_ms = int(offset_ms)
+        except (TypeError, ValueError):
+            return False
+        offset_ms = max(-2000, min(2000, offset_ms))
+        if offset_ms == self._av_offset_ms:
+            return False
+        self._av_offset_ms = offset_ms
+        # Only restart live playback; if nothing is playing, the next song
+        # will pick up the new offset.
+        if self._now_playing:
+            self._restart_event.set()
+        else:
+            await self._broadcast_queue()
         return True
 
     def get_queue(self) -> list[dict]:
@@ -185,9 +228,17 @@ class QueueManager:
                 "server_ts": e.server_ts,
                 "play_at": e.play_at,
                 "semitones": self._current_pitch,
+                "av_offset_ms": self._av_offset_ms,
                 "paused": self._paused,
             }
         return None
+
+    def playback_settings(self) -> dict:
+        """Current global playback tweakables (visible even when idle)."""
+        return {
+            "semitones": self._current_pitch,
+            "av_offset_ms": self._av_offset_ms,
+        }
 
     # ── Playback loop ────────────────────────────────────────────────────────
 
@@ -225,12 +276,17 @@ class QueueManager:
         self._skip_event.clear()
         self._song_ended_event.clear()
 
-        # Each loop iteration is one HLS session. A pitch change restarts
-        # the song at the new pitch with a fresh session + 'play' broadcast.
+        # Each loop iteration is one HLS session. Pitch or A/V-offset
+        # changes restart the song with fresh ffmpeg args and a new
+        # 'play' broadcast so every screen reloads in lock-step.
         while True:
-            self._pitch_change_event.clear()
+            self._restart_event.clear()
 
-            session = await hls_manager.start(song, semitones=self._current_pitch)
+            session = await hls_manager.start(
+                song,
+                semitones=self._current_pitch,
+                av_offset_ms=self._av_offset_ms,
+            )
             ready = await session.wait_ready(timeout=settings.hls_ready_timeout)
             if not ready:
                 log.error(
@@ -258,6 +314,7 @@ class QueueManager:
                 "server_ts": now,
                 "play_at": entry.play_at,
                 "semitones": self._current_pitch,
+                "av_offset_ms": self._av_offset_ms,
                 "duration_secs": song.get("duration_secs"),
             }
             await ws_manager.broadcast(play_msg)
@@ -266,7 +323,7 @@ class QueueManager:
                 [
                     asyncio.create_task(self._skip_event.wait()),
                     asyncio.create_task(self._song_ended_event.wait()),
-                    asyncio.create_task(self._pitch_change_event.wait()),
+                    asyncio.create_task(self._restart_event.wait()),
                 ],
                 return_when=asyncio.FIRST_COMPLETED,
                 timeout=_PLAY_TIMEOUT,
@@ -274,12 +331,15 @@ class QueueManager:
             for t in pending:
                 t.cancel()
 
-            # Tear the session down before any next step (pitch restart or exit).
+            # Tear the session down before any next step (restart or exit).
             await hls_manager.stop(session.session_id)
             self._current_session = None
 
-            if self._pitch_change_event.is_set() and not self._skip_event.is_set():
-                log.info(f"[{song['id']}] pitch change → {self._current_pitch:+d}st, restarting")
+            if self._restart_event.is_set() and not self._skip_event.is_set():
+                log.info(
+                    f"[{song['id']}] restart → pitch {self._current_pitch:+d}st, "
+                    f"offset {self._av_offset_ms:+d}ms"
+                )
                 continue
 
             if not done:

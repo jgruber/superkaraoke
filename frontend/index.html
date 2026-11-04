@@ -44,21 +44,68 @@
         :title="connected ? 'Live' : 'Reconnecting...'"
       ></span>
 
-      <!-- Dark mode toggle -->
-      <button @click="toggleTheme()" class="btn-ghost p-2 rounded-lg" :title="darkMode ? 'Light mode' : 'Dark mode'">
-        <template x-if="darkMode">
+      <!-- Settings menu (gear) -->
+      <div class="relative">
+        <button
+          @click="settingsOpen = !settingsOpen"
+          title="Settings"
+          class="btn-ghost p-2 rounded-lg"
+        >
           <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-              d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364-6.364l-.707.707M6.343 17.657l-.707.707M17.657 17.657l-.707-.707M6.343 6.343l-.707-.707M16 12a4 4 0 11-8 0 4 4 0 018 0z"/>
-          </svg>
-        </template>
-        <template x-if="!darkMode">
-          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.574 2.25.072 2.573-1.065z"/>
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-              d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z"/>
+              d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>
           </svg>
-        </template>
-      </button>
+        </button>
+
+        <div
+          x-show="settingsOpen"
+          @click.outside="settingsOpen = false"
+          x-transition:enter="transition ease-out duration-100"
+          x-transition:enter-start="opacity-0 scale-95"
+          x-transition:enter-end="opacity-100 scale-100"
+          x-transition:leave="transition ease-in duration-75"
+          x-transition:leave-start="opacity-100 scale-100"
+          x-transition:leave-end="opacity-0 scale-95"
+          class="absolute right-0 mt-1 w-56 rounded-xl shadow-lg border border-gray-200 dark:border-gray-700
+                 bg-white dark:bg-gray-900 py-1 z-50"
+        >
+          <button
+            @click="toggleTheme(); settingsOpen = false"
+            class="w-full text-left px-4 py-2 text-sm hover:bg-gray-50 dark:hover:bg-gray-800 text-gray-700 dark:text-gray-300 flex items-center gap-3"
+          >
+            <template x-if="darkMode">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                  d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364-6.364l-.707.707M6.343 17.657l-.707.707M17.657 17.657l-.707-.707M6.343 6.343l-.707-.707M16 12a4 4 0 11-8 0 4 4 0 018 0z"/>
+              </svg>
+            </template>
+            <template x-if="!darkMode">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                  d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z"/>
+              </svg>
+            </template>
+            <span x-text="darkMode ? 'Light mode' : 'Dark mode'"></span>
+          </button>
+
+          <div class="border-t border-gray-100 dark:border-gray-800 my-1"></div>
+
+          <a
+            href="/calibrate"
+            target="_blank"
+            @click="settingsOpen = false"
+            class="px-4 py-2 text-sm hover:bg-gray-50 dark:hover:bg-gray-800 text-gray-700 dark:text-gray-300 flex items-center gap-3"
+          >
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/>
+            </svg>
+            <span>Calibrate A/V</span>
+          </a>
+        </div>
+      </div>
 
       <!-- ── Profile chip ────────────────────────────────────────────────── -->
       <div class="relative" x-show="authReady">
@@ -95,6 +142,53 @@
           <!-- Client IP -->
           <template x-if="clientIp">
             <div class="px-4 py-1.5 text-xs text-gray-400 dark:text-gray-500 font-mono" x-text="clientIp"></div>
+          </template>
+
+          <!-- Agent key (bearer token for MCP tools) -->
+          <template x-if="agentKey">
+            <div class="px-4 py-2 border-t border-gray-100 dark:border-gray-800">
+              <div class="flex items-center justify-between text-[10px] text-gray-500 dark:text-gray-400 uppercase tracking-widest font-medium mb-1">
+                <span>Agent key</span>
+                <span class="normal-case tracking-normal text-gray-400 dark:text-gray-500">for MCP</span>
+              </div>
+              <div class="flex items-center gap-2">
+                <code
+                  class="flex-1 font-mono text-sm px-2 py-1 rounded bg-gray-100 dark:bg-gray-800 text-gray-800 dark:text-gray-200 select-all"
+                  x-text="agentKey"
+                ></code>
+                <button
+                  @click.stop="copyAgentKey()"
+                  :title="agentKeyCopied ? 'Copied!' : 'Copy to clipboard'"
+                  class="p-1.5 rounded hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-500 hover:text-brand-600 dark:text-gray-400 dark:hover:text-brand-400 transition-colors"
+                >
+                  <template x-if="!agentKeyCopied">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                        d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3"/>
+                    </svg>
+                  </template>
+                  <template x-if="agentKeyCopied">
+                    <svg class="w-4 h-4 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
+                    </svg>
+                  </template>
+                </button>
+                <button
+                  @click.stop="rotateAgentKey()"
+                  :disabled="agentKeyRotating"
+                  title="Regenerate key (revokes the old one)"
+                  class="p-1.5 rounded hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-500 hover:text-brand-600 dark:text-gray-400 dark:hover:text-brand-400 disabled:opacity-50 transition-colors"
+                >
+                  <svg class="w-4 h-4" :class="agentKeyRotating ? 'animate-spin' : ''" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                      d="M4 4v5h5M20 20v-5h-5M5.5 15a7 7 0 0012.5 1.5M18.5 9A7 7 0 006 7.5"/>
+                  </svg>
+                </button>
+              </div>
+              <p class="mt-1 text-[10px] text-gray-400 dark:text-gray-500 leading-tight">
+                Use as Bearer token at <code class="font-mono">/mcp</code>
+              </p>
+            </div>
           </template>
 
           <!-- Local user options -->
@@ -140,11 +234,73 @@
 
     <!-- ── Now playing banner ───────────────────────────────────────────── -->
     <template x-if="nowPlaying">
-      <div class="card px-4 py-4 flex items-center gap-4 bg-brand-50 dark:bg-brand-950 border-brand-200 dark:border-brand-800">
+      <div class="card px-4 py-4 flex flex-wrap items-center gap-x-4 gap-y-3 bg-brand-50 dark:bg-brand-950 border-brand-200 dark:border-brand-800">
         <div class="flex-1 min-w-0">
           <p class="text-xs text-brand-600 dark:text-brand-400 uppercase tracking-widest font-medium mb-0.5">Now Playing</p>
           <p class="font-semibold truncate" x-text="nowPlaying.song?.title || nowPlaying.title"></p>
           <p class="text-sm text-gray-500 dark:text-gray-400" x-text="'Requested by ' + (nowPlaying.user || nowPlaying.song?.user || '')"></p>
+        </div>
+
+        <!-- Pitch (semitones) — rebroadcasts to every screen -->
+        <div class="flex items-center gap-1 rounded-xl px-2 py-1
+                    bg-white/70 dark:bg-gray-900/40 border border-brand-200 dark:border-brand-800">
+          <span class="text-[10px] text-gray-500 dark:text-gray-400 uppercase tracking-widest font-medium pr-1">Key</span>
+          <button
+            @click="adjustPitch(-1)"
+            :disabled="semitones <= -12"
+            title="Pitch down"
+            class="w-7 h-7 rounded-lg flex items-center justify-center text-base leading-none
+                   text-gray-600 dark:text-gray-300 hover:bg-brand-100 dark:hover:bg-brand-900
+                   disabled:opacity-30 disabled:hover:bg-transparent transition-colors"
+          >♭</button>
+          <button
+            @click="resetPitch()"
+            :disabled="semitones === 0"
+            title="Reset pitch"
+            class="min-w-[2.5rem] px-1 font-mono text-sm text-gray-700 dark:text-gray-200
+                   disabled:cursor-default enabled:hover:text-brand-600 dark:enabled:hover:text-brand-400
+                   transition-colors"
+            x-text="semitones === 0 ? '0' : (semitones > 0 ? '+' + semitones : semitones)"
+          ></button>
+          <button
+            @click="adjustPitch(1)"
+            :disabled="semitones >= 12"
+            title="Pitch up"
+            class="w-7 h-7 rounded-lg flex items-center justify-center text-base leading-none
+                   text-gray-600 dark:text-gray-300 hover:bg-brand-100 dark:hover:bg-brand-900
+                   disabled:opacity-30 disabled:hover:bg-transparent transition-colors"
+          >♯</button>
+        </div>
+
+        <!-- A/V sync offset (ms) — positive = delay audio, negative = advance audio -->
+        <div class="flex items-center gap-1 rounded-xl px-2 py-1
+                    bg-white/70 dark:bg-gray-900/40 border border-brand-200 dark:border-brand-800">
+          <span class="text-[10px] text-gray-500 dark:text-gray-400 uppercase tracking-widest font-medium pr-1">A/V</span>
+          <button
+            @click="adjustAvOffset(-20)"
+            :disabled="avOffsetMs <= -2000"
+            title="Audio earlier (video lag)"
+            class="w-7 h-7 rounded-lg flex items-center justify-center text-base leading-none
+                   text-gray-600 dark:text-gray-300 hover:bg-brand-100 dark:hover:bg-brand-900
+                   disabled:opacity-30 disabled:hover:bg-transparent transition-colors"
+          >−</button>
+          <button
+            @click="resetAvOffset()"
+            :disabled="avOffsetMs === 0"
+            :title="avOffsetMs === 0 ? 'A/V offset' : 'Reset A/V offset'"
+            class="min-w-[3.5rem] px-1 font-mono text-sm text-gray-700 dark:text-gray-200
+                   disabled:cursor-default enabled:hover:text-brand-600 dark:enabled:hover:text-brand-400
+                   transition-colors"
+            x-text="avOffsetMs === 0 ? '0 ms' : (avOffsetMs > 0 ? '+' + avOffsetMs + ' ms' : avOffsetMs + ' ms')"
+          ></button>
+          <button
+            @click="adjustAvOffset(20)"
+            :disabled="avOffsetMs >= 2000"
+            title="Audio later (audio lead)"
+            class="w-7 h-7 rounded-lg flex items-center justify-center text-base leading-none
+                   text-gray-600 dark:text-gray-300 hover:bg-brand-100 dark:hover:bg-brand-900
+                   disabled:opacity-30 disabled:hover:bg-transparent transition-colors"
+          >+</button>
         </div>
 
         <div class="flex items-center gap-2 shrink-0">

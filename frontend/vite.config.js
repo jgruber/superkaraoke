@@ -6,9 +6,10 @@ export default defineConfig({
     outDir: 'dist',
     rollupOptions: {
       input: {
-        main:    resolve(__dirname, 'index.html'),
-        screen:  resolve(__dirname, 'screen.html'),
-        library: resolve(__dirname, 'library.html'),
+        main:      resolve(__dirname, 'index.html'),
+        screen:    resolve(__dirname, 'screen.html'),
+        library:   resolve(__dirname, 'library.html'),
+        calibrate: resolve(__dirname, 'calibrate.html'),
       },
     },
   },

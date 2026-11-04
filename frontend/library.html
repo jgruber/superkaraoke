@@ -32,20 +32,69 @@
       </nav>
 
       <div class="flex-1"></div>
-      <button @click="toggleTheme()" class="btn-ghost p-2 rounded-lg">
-        <template x-if="darkMode">
+
+      <!-- Settings menu (gear) -->
+      <div class="relative">
+        <button
+          @click="settingsOpen = !settingsOpen"
+          title="Settings"
+          class="btn-ghost p-2 rounded-lg"
+        >
           <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-              d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364-6.364l-.707.707M6.343 17.657l-.707.707M17.657 17.657l-.707-.707M6.343 6.343l-.707-.707M16 12a4 4 0 11-8 0 4 4 0 018 0z"/>
-          </svg>
-        </template>
-        <template x-if="!darkMode">
-          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.574 2.25.072 2.573-1.065z"/>
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-              d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z"/>
+              d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>
           </svg>
-        </template>
-      </button>
+        </button>
+
+        <div
+          x-show="settingsOpen"
+          @click.outside="settingsOpen = false"
+          x-transition:enter="transition ease-out duration-100"
+          x-transition:enter-start="opacity-0 scale-95"
+          x-transition:enter-end="opacity-100 scale-100"
+          x-transition:leave="transition ease-in duration-75"
+          x-transition:leave-start="opacity-100 scale-100"
+          x-transition:leave-end="opacity-0 scale-95"
+          class="absolute right-0 mt-1 w-56 rounded-xl shadow-lg border border-gray-200 dark:border-gray-700
+                 bg-white dark:bg-gray-900 py-1 z-50"
+        >
+          <button
+            @click="toggleTheme(); settingsOpen = false"
+            class="w-full text-left px-4 py-2 text-sm hover:bg-gray-50 dark:hover:bg-gray-800 text-gray-700 dark:text-gray-300 flex items-center gap-3"
+          >
+            <template x-if="darkMode">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                  d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364-6.364l-.707.707M6.343 17.657l-.707.707M17.657 17.657l-.707-.707M6.343 6.343l-.707-.707M16 12a4 4 0 11-8 0 4 4 0 018 0z"/>
+              </svg>
+            </template>
+            <template x-if="!darkMode">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                  d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z"/>
+              </svg>
+            </template>
+            <span x-text="darkMode ? 'Light mode' : 'Dark mode'"></span>
+          </button>
+
+          <div class="border-t border-gray-100 dark:border-gray-800 my-1"></div>
+
+          <a
+            href="/calibrate"
+            target="_blank"
+            @click="settingsOpen = false"
+            class="px-4 py-2 text-sm hover:bg-gray-50 dark:hover:bg-gray-800 text-gray-700 dark:text-gray-300 flex items-center gap-3"
+          >
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/>
+            </svg>
+            <span>Calibrate A/V</span>
+          </a>
+        </div>
+      </div>
     </div>
   </header>
 

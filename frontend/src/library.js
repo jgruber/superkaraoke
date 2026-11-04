@@ -12,6 +12,7 @@ function initLibrary() {
   return {
     // ── State ─────────────────────────────────────────────────────────────
     darkMode: false,
+    settingsOpen: false,
     songs: [],
     total: 0,
     stats: { total: 0, cdg_count: 0, video_count: 0, no_artist: 0, liked: 0 },
