@@ -16,6 +16,16 @@ services:
       # Tell the bgutil-ytdlp-pot-provider plugin where its PO token
       # generator lives (the bgutil-pot sidecar below).
       GETPOT_BGUTIL_BASE_URL: http://bgutil-pot:4416
+      # Settings → Updates uses Portainer to self-restart (after a yt-dlp
+      # pip upgrade) and to redeploy the sidecar (for PO-token updates).
+      # Set PORTAINER_TOKEN in your deploy env or Portainer stack env.
+      # If any of these are unset, the Update buttons stay available but
+      # the PO-token one is disabled and the self-restart falls back to
+      # "update installed; restart the container yourself."
+      SK_PORTAINER_URL:         ${PORTAINER_URL:-}
+      SK_PORTAINER_TOKEN:       ${PORTAINER_TOKEN:-}
+      SK_PORTAINER_ENDPOINT_ID: ${PORTAINER_ENDPOINT_ID:-}
+      SK_PORTAINER_STACK_ID:    ${PORTAINER_STACK_ID:-}
     restart: unless-stopped
     depends_on:
       - bgutil-pot

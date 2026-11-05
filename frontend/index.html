@@ -104,6 +104,19 @@
             </svg>
             <span>Calibrate A/V</span>
           </a>
+
+          <div class="border-t border-gray-100 dark:border-gray-800 my-1"></div>
+
+          <button
+            @click="openUpdates()"
+            class="w-full text-left px-4 py-2 text-sm hover:bg-gray-50 dark:hover:bg-gray-800 text-gray-700 dark:text-gray-300 flex items-center gap-3"
+          >
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M4 4v5h5M20 20v-5h-5M5.5 15a7 7 0 0012.5 1.5M18.5 9A7 7 0 006 7.5"/>
+            </svg>
+            <span>Updates…</span>
+          </button>
         </div>
       </div>
 
@@ -530,6 +543,96 @@
           <span x-text="loginLoading ? 'Signing in…' : 'Sign in'"></span>
         </button>
       </form>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════
+       UPDATES MODAL
+  ════════════════════════════════════════════════════════════════════════ -->
+  <div
+    x-show="updatesModal"
+    x-transition:enter="transition-opacity duration-200"
+    x-transition:enter-start="opacity-0"
+    x-transition:enter-end="opacity-100"
+    x-transition:leave="transition-opacity duration-150"
+    x-transition:leave-start="opacity-100"
+    x-transition:leave-end="opacity-0"
+    class="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-4 bg-black/50 backdrop-blur-sm"
+    @click.self="updatesModal = false"
+  >
+    <div class="card w-full max-w-lg shadow-2xl flex flex-col max-h-[85vh]">
+      <div class="px-5 pt-5 pb-3 border-b border-gray-200 dark:border-gray-800 shrink-0 flex items-center">
+        <svg class="w-5 h-5 mr-2 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+            d="M4 4v5h5M20 20v-5h-5M5.5 15a7 7 0 0012.5 1.5M18.5 9A7 7 0 006 7.5"/>
+        </svg>
+        <h2 class="font-semibold text-base">Updates</h2>
+        <button @click="updatesModal = false" class="ml-auto btn-ghost p-1 text-gray-400">✕</button>
+      </div>
+
+      <div class="p-5 space-y-5 overflow-y-auto">
+        <!-- yt-dlp row -->
+        <div class="flex items-start gap-3">
+          <div class="flex-1 min-w-0">
+            <p class="font-medium text-sm">yt-dlp</p>
+            <p class="text-xs text-gray-500 dark:text-gray-400 font-mono truncate"
+               x-text="updates.versions?.yt_dlp || '—'"></p>
+            <p x-show="updates.versions?.bgutil_plugin" class="text-[11px] text-gray-400 dark:text-gray-500 font-mono truncate">
+              bgutil plugin: <span x-text="updates.versions?.bgutil_plugin || '—'"></span>
+            </p>
+          </div>
+          <button
+            @click="runUpdateYtdlp()"
+            :disabled="updates.busyYt"
+            class="btn-primary text-xs px-3 py-1.5 shrink-0"
+          >
+            <span x-text="updates.busyYt ? 'Updating…' : 'Update'"></span>
+          </button>
+        </div>
+
+        <!-- PO-token sidecar row -->
+        <div class="flex items-start gap-3 border-t border-gray-100 dark:border-gray-800 pt-4">
+          <div class="flex-1 min-w-0">
+            <p class="font-medium text-sm">PO-token service</p>
+            <p class="text-xs text-gray-500 dark:text-gray-400 font-mono truncate"
+               x-text="updates.versions?.po_token_sidecar?.version
+                        ? ('v' + updates.versions.po_token_sidecar.version
+                           + (updates.versions.po_token_sidecar.server_uptime
+                              ? (' · up ' + Math.round(updates.versions.po_token_sidecar.server_uptime) + 's')
+                              : ''))
+                        : (updates.versions?.po_token_sidecar?.error || '—')"></p>
+          </div>
+          <button
+            @click="runUpdatePoToken()"
+            :disabled="updates.busyPot || !updates.versions?.portainer_ready"
+            :title="updates.versions?.portainer_ready ? '' : 'SK_PORTAINER_* env vars not set on this container'"
+            class="btn-primary text-xs px-3 py-1.5 shrink-0"
+          >
+            <span x-text="updates.busyPot ? 'Pulling…' : 'Update'"></span>
+          </button>
+        </div>
+
+        <!-- Result area -->
+        <div x-show="updates.result"
+             class="text-xs rounded-lg p-3 border"
+             :class="updates.ok
+                      ? 'border-green-200 dark:border-green-900 bg-green-50 dark:bg-green-950/40 text-green-800 dark:text-green-200'
+                      : 'border-red-200 dark:border-red-900 bg-red-50 dark:bg-red-950/40 text-red-800 dark:text-red-200'">
+          <pre class="whitespace-pre-wrap font-mono" x-text="updates.result"></pre>
+        </div>
+
+        <p x-show="!updates.versions?.portainer_ready" class="text-[11px] text-amber-700 dark:text-amber-400">
+          Portainer not configured — the PO-token update button is disabled. Set
+          <code class="font-mono">SK_PORTAINER_URL</code>,
+          <code class="font-mono">SK_PORTAINER_TOKEN</code>,
+          <code class="font-mono">SK_PORTAINER_ENDPOINT_ID</code>, and
+          <code class="font-mono">SK_PORTAINER_STACK_ID</code> on this container.
+        </p>
+      </div>
+
+      <div class="px-5 py-3 border-t border-gray-200 dark:border-gray-800 flex justify-end">
+        <button @click="updatesModal = false" class="btn-ghost text-sm">Close</button>
+      </div>
     </div>
   </div>
 

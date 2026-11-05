@@ -67,6 +67,10 @@ function initApp() {
     clientIp:        null,
     allowedNetworks: null,   // comma-separated CIDRs from server config
 
+    // Updates modal
+    updatesModal:    false,
+    updates:         { versions: null, busyYt: false, busyPot: false, result: '', ok: true },
+
     // User management modal
     usersModal:      false,
     usersList:       [],
@@ -211,6 +215,94 @@ function initApp() {
         else         localStorage.removeItem('sk-username')
       }
       this.profileOpen = false
+    },
+
+    // ── Updates modal ──────────────────────────────────────────────────────
+    async openUpdates() {
+      this.settingsOpen = false
+      this.updatesModal = true
+      this.updates = { versions: null, busyYt: false, busyPot: false, result: '', ok: true }
+      await this._fetchVersions()
+    },
+
+    async _fetchVersions() {
+      try {
+        const r = await fetch('/api/admin/versions')
+        this.updates.versions = r.ok ? await r.json() : null
+      } catch {
+        this.updates.versions = null
+      }
+    },
+
+    async runUpdateYtdlp() {
+      if (this.updates.busyYt) return
+      this.updates.busyYt = true
+      this.updates.result = 'Running pip install -U yt-dlp bgutil-ytdlp-pot-provider…'
+      this.updates.ok = true
+      try {
+        const r = await fetch('/api/admin/yt-dlp/update', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ restart: true }),
+        })
+        const d = await r.json()
+        if (!r.ok) {
+          this.updates.result = typeof d.detail === 'string'
+            ? d.detail
+            : JSON.stringify(d.detail || d, null, 2)
+          this.updates.ok = false
+        } else {
+          const b = d.before || {}, a = d.after || {}
+          const lines = [
+            `yt-dlp:        ${b.yt_dlp} → ${a.yt_dlp}`,
+            `bgutil plugin: ${b.bgutil_plugin} → ${a.bgutil_plugin}`,
+          ]
+          if (d.restarting)      lines.push('Restarting container to pick up new code…')
+          if (d.restart_failed)  lines.push(`Restart skipped: ${d.restart_failed}`)
+          if (!d.needs_restart)  lines.push('Already at latest version.')
+          this.updates.result = lines.join('\n')
+          this.updates.ok = true
+        }
+      } catch (e) {
+        this.updates.result = String(e)
+        this.updates.ok = false
+      } finally {
+        this.updates.busyYt = false
+        // Refresh versions; on a successful restart this will fail for a few
+        // seconds before the new container comes up.
+        setTimeout(() => this._fetchVersions(), 1500)
+      }
+    },
+
+    async runUpdatePoToken() {
+      if (this.updates.busyPot) return
+      this.updates.busyPot = true
+      this.updates.result = 'Pulling bgutil-pot:latest and redeploying…'
+      this.updates.ok = true
+      try {
+        const r = await fetch('/api/admin/po-token/update', { method: 'POST' })
+        const d = await r.json()
+        if (!r.ok) {
+          this.updates.result = typeof d.detail === 'string'
+            ? d.detail
+            : JSON.stringify(d.detail || d, null, 2)
+          this.updates.ok = false
+        } else {
+          const lines = [
+            `stack:   ${d.stack_name}`,
+            `before:  ${d.before?.version || '(unreachable)'}`,
+            `after:   ${d.after?.version  || '(did not respond)'}`,
+          ]
+          this.updates.result = lines.join('\n')
+          this.updates.ok = !!d.after?.ok
+        }
+      } catch (e) {
+        this.updates.result = String(e)
+        this.updates.ok = false
+      } finally {
+        this.updates.busyPot = false
+        this._fetchVersions()
+      }
     },
 
     // ── User management modal ──────────────────────────────────────────────

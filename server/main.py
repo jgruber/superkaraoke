@@ -15,6 +15,7 @@ from .hls_manager import hls_manager
 from .stream_manager import stream_manager
 from .queue_manager import queue_manager
 from .routers import (
+    admin as admin_router,
     calibrate as calibrate_router,
     hls as hls_router,
     mcp as mcp_router,
@@ -90,6 +91,7 @@ async def auth_middleware(request: Request, call_next):
 # ── Routers ───────────────────────────────────────────────────────────────────
 
 app.include_router(auth_router,             prefix="/api")
+app.include_router(admin_router.router,     prefix="/api")
 app.include_router(songs.router,            prefix="/api")
 app.include_router(queue.router,            prefix="/api")
 app.include_router(library_router.router,   prefix="/api")

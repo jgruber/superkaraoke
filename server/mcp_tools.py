@@ -301,6 +301,23 @@ async def _t_rescan_library() -> dict:
     return {"started": True}
 
 
+# ── Admin / updates ──────────────────────────────────────────────────────────
+
+async def _t_admin_versions() -> dict:
+    from .routers.admin import versions as _versions
+    return await _versions()
+
+
+async def _t_update_ytdlp(restart: bool = True) -> dict:
+    from .routers.admin import update_ytdlp as _upd, UpdateYtdlpBody
+    return await _upd(UpdateYtdlpBody(restart=bool(restart)))
+
+
+async def _t_update_po_token() -> dict:
+    from .routers.admin import update_po_token as _upd
+    return await _upd()
+
+
 # ── Database export / import ────────────────────────────────────────────────
 
 _EXPORT_VERSION = 1
@@ -655,6 +672,45 @@ TOOLS: dict[str, dict] = {
         ),
         "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
         "handler": _t_rescan_library,
+    },
+    "admin_versions": {
+        "description": (
+            "Return the currently-running yt-dlp version, the bgutil-ytdlp-"
+            "pot-provider plugin version, and the PO-token sidecar's /ping "
+            "response. Also reports whether Portainer is configured for "
+            "self-restart and sidecar redeploys."
+        ),
+        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+        "handler": _t_admin_versions,
+    },
+    "update_ytdlp": {
+        "description": (
+            "Run `pip install -U yt-dlp bgutil-ytdlp-pot-provider` inside "
+            "the superkaraoke container. The updated code only takes effect "
+            "after a process restart: with restart=true (default) the "
+            "container is restarted via Portainer after a short delay, so "
+            "the next request to this server will come back on the new "
+            "version. Returns before/after versions."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "restart": {"type": "boolean", "default": True,
+                            "description": "Restart this container after installing."},
+            },
+            "additionalProperties": False,
+        },
+        "handler": _t_update_ytdlp,
+    },
+    "update_po_token": {
+        "description": (
+            "Pull the latest brainicism/bgutil-ytdlp-pot-provider image and "
+            "recreate the bgutil-pot sidecar (via Portainer stack redeploy "
+            "with pullImage=true). Waits up to 15s for the sidecar's /ping "
+            "to come back and reports before/after version info."
+        ),
+        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+        "handler": _t_update_po_token,
     },
     "export_db": {
         "description": (
