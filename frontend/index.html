@@ -389,7 +389,8 @@
               <div class="flex-1 min-w-0">
                 <p class="font-medium text-sm truncate leading-snug" x-text="song.title"></p>
                 <div class="flex items-center gap-2 mt-0.5">
-                  <span x-show="song.artist" class="text-xs text-gray-500 dark:text-gray-400 truncate" x-text="song.artist"></span>
+                  <span class="text-xs text-gray-500 dark:text-gray-400 truncate"
+                        x-text="[song.artist, song.year, song.genre].filter(v => v !== null && v !== undefined && v !== '' && v !== 0).join(' – ')"></span>
                   <span x-show="isInQueue(song.id)" class="badge badge-purple shrink-0">In Queue</span>
                 </div>
               </div>
