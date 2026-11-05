@@ -13,16 +13,16 @@
 
   <!-- ── Nav ──────────────────────────────────────────────────────────────── -->
   <header class="sticky top-0 z-30 border-b border-gray-200 dark:border-gray-800 bg-white/90 dark:bg-gray-950/90 backdrop-blur-sm">
-    <div class="max-w-7xl mx-auto px-4 h-14 flex items-center gap-3">
-      <span class="text-xl">🎤</span>
-      <span class="font-bold text-lg tracking-tight text-brand-600 dark:text-brand-400">SuperKaraoke</span>
+    <div class="max-w-7xl mx-auto px-3 sm:px-4 h-14 flex items-center gap-2 sm:gap-3">
+      <span class="text-xl shrink-0">🎤</span>
+      <span class="hidden md:inline font-bold text-lg tracking-tight text-brand-600 dark:text-brand-400">SuperKaraoke</span>
 
-      <nav class="hidden sm:flex items-center gap-1 ml-4">
-        <a href="/"        class="btn-ghost text-sm font-medium">Queue</a>
-        <a href="/library" class="btn-ghost text-sm font-medium text-brand-600 dark:text-brand-400">Library</a>
+      <nav class="flex items-center gap-0.5 sm:gap-1 sm:ml-4">
+        <a href="/"        class="btn-ghost text-sm font-medium px-2 sm:px-3">Queue</a>
+        <a href="/library" class="btn-ghost text-sm font-medium px-2 sm:px-3 text-brand-600 dark:text-brand-400">Library</a>
         <a href="/screen" target="_blank"
            title="Open Screen"
-           class="w-9 h-9 rounded-full flex items-center justify-center transition-colors
+           class="w-9 h-9 rounded-full flex items-center justify-center transition-colors shrink-0
                   bg-brand-100 hover:bg-brand-200 dark:bg-brand-900 dark:hover:bg-brand-800
                   text-brand-700 dark:text-brand-300">
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" class="w-4 h-4">
@@ -592,7 +592,7 @@
 
       <!-- Modal footer -->
       <div class="px-5 py-4 border-t border-gray-200 dark:border-gray-800 flex gap-2 shrink-0">
-        <button @click="deleteConfirm = true"
+        <button @click="deleteFileToo = false; deleteConfirm = true"
           class="btn-ghost text-red-500 hover:text-red-700 dark:text-red-400 dark:hover:text-red-300 px-3">
           🗑
         </button>
@@ -623,17 +623,30 @@
       x-transition:enter-end="opacity-100 scale-100"
     >
       <h3 class="font-semibold text-base mb-1">Remove from library?</h3>
-      <p class="text-sm text-gray-500 dark:text-gray-400 mb-1">
+      <p class="text-sm text-gray-500 dark:text-gray-400 mb-3">
         "<span class="font-medium text-gray-700 dark:text-gray-300" x-text="song?.title"></span>"
       </p>
-      <p class="text-xs text-gray-400 dark:text-gray-500 mb-5">
-        This removes the entry from the database. The file on disk is not deleted.
+
+      <div class="rounded-lg border border-red-200 dark:border-red-900 bg-red-50 dark:bg-red-950/40 p-3 mb-4 flex items-start gap-2">
+        <input id="delete-file" x-model="deleteFileToo" type="checkbox"
+          class="mt-0.5 w-4 h-4 rounded border-gray-300 text-red-600 focus:ring-red-500 dark:border-gray-600 dark:bg-gray-800" />
+        <label for="delete-file" class="text-sm cursor-pointer select-none text-red-800 dark:text-red-200">
+          <span class="font-medium">Also delete file(s) on disk</span>
+          <span class="block text-xs text-red-700/80 dark:text-red-300/80 font-mono mt-1 truncate" x-text="song?.file_path"></span>
+          <span x-show="song?.cdg_path" class="block text-xs text-red-700/80 dark:text-red-300/80 font-mono truncate" x-text="song?.cdg_path"></span>
+          <span class="block text-[11px] mt-1 text-red-700/70 dark:text-red-300/70">Permanent. Cannot be undone.</span>
+        </label>
+      </div>
+
+      <p x-show="!deleteFileToo" class="text-xs text-gray-400 dark:text-gray-500 mb-4">
+        The file(s) on disk will be left in place and will be picked up again on the next rescan.
       </p>
+
       <div class="flex gap-2">
         <button @click="deleteConfirm = false" class="btn-ghost flex-1">Cancel</button>
         <button @click="deleteSong()" :disabled="deleting"
           class="flex-1 px-4 py-2 rounded-xl font-medium text-sm bg-red-600 hover:bg-red-700 text-white transition-colors disabled:opacity-50">
-          <span x-text="deleting ? 'Removing…' : 'Yes, remove it'"></span>
+          <span x-text="deleting ? 'Removing…' : (deleteFileToo ? 'Yes, delete it' : 'Yes, remove it')"></span>
         </button>
       </div>
     </div>

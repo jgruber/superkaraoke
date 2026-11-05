@@ -33,6 +33,7 @@ function initLibrary() {
     converting: false,
     convertError: null,
     deleteConfirm: false,
+    deleteFileToo: false,
     deleting: false,
 
     // MusicBrainz panel (inside modal)
@@ -161,6 +162,7 @@ function initLibrary() {
       this.convertError = null
       this.converting = false
       this.deleteConfirm = false
+      this.deleteFileToo = false
       this.modal = true
       this.$nextTick(() => this.$refs.titleInput?.focus())
     },
@@ -169,17 +171,29 @@ function initLibrary() {
       this.modal = false
       this.song = null
       this.deleteConfirm = false
+      this.deleteFileToo = false
     },
 
     async deleteSong() {
       if (!this.song) return
       this.deleting = true
+      const alsoFile = !!this.deleteFileToo
+      const title    = this.song.title
       try {
-        const r = await fetch(`/api/library/${this.song.id}`, { method: 'DELETE' })
+        const url = `/api/library/${this.song.id}` + (alsoFile ? '?delete_file=true' : '')
+        const r = await fetch(url, { method: 'DELETE' })
         if (!r.ok) throw new Error()
+        const data = await r.json().catch(() => ({}))
         this.songs = this.songs.filter(s => s.id !== this.song.id)
         this.total = Math.max(0, this.total - 1)
-        this.showToast(`"${this.song.title}" removed from library`)
+        if (alsoFile && data.file_errors?.length) {
+          this.showToast(`"${title}" removed, but file delete failed`, 'error')
+        } else if (alsoFile) {
+          const n = (data.deleted_files || []).length
+          this.showToast(`"${title}" and ${n} file${n === 1 ? '' : 's'} deleted`)
+        } else {
+          this.showToast(`"${title}" removed from library`)
+        }
         this.closeModal()
         this.fetchStats()
       } catch {
@@ -197,12 +211,13 @@ function initLibrary() {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            title:        this.song.title,
-            artist:       this.song.artist,
-            year:         this.song.year   ? Number(this.song.year)  : null,
-            genre:        this.song.genre,
-            likes:        this.song.likes  ? Number(this.song.likes) : 0,
-            is_duplicate: this.song.is_duplicate ? 1 : 0,
+            title:           this.song.title,
+            artist:          this.song.artist,
+            year:            this.song.year   ? Number(this.song.year)  : null,
+            genre:           this.song.genre,
+            likes:           this.song.likes  ? Number(this.song.likes) : 0,
+            metadata_locked: this.song.metadata_locked ? 1 : 0,
+            is_duplicate:    this.song.is_duplicate ? 1 : 0,
           }),
         })
         if (!r.ok) throw new Error()

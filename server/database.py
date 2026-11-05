@@ -282,15 +282,17 @@ async def get_library_stats() -> dict:
 async def update_song_metadata(song_id: str, fields: dict) -> Optional[dict]:
     """
     Update user-editable metadata fields.
-    Automatically sets metadata_locked = 1 to protect against rescan overwrites.
+    If `metadata_locked` is not in `fields`, default to locking (1) so an
+    explicit edit protects against rescan overwrites. Pass `metadata_locked`
+    explicitly (0 or 1) to control the lock yourself.
     """
     allowed = {"title", "artist", "year", "genre", "likes", "metadata_locked", "is_duplicate", "metadata_updated"}
     updates = {k: v for k, v in fields.items() if k in allowed}
     if not updates:
         return await get_song(song_id)
 
-    # Always lock when user explicitly saves
-    updates["metadata_locked"] = 1
+    if "metadata_locked" not in updates:
+        updates["metadata_locked"] = 1
 
     set_clause = ", ".join(f"{k} = ?" for k in updates)
     values = list(updates.values()) + [song_id]

@@ -10,20 +10,14 @@ Methods implemented:
   - notifications/initialized
   - tools/list
   - tools/call
-
-Tools:
-  library_stats            — totals, counts by kind, duplicates
-  search_songs             — paginated search with filters
-  get_song                 — single-song detail
-  update_song_metadata     — rewrite title / artist / genre / year
-  delete_song              — remove row (does NOT touch the underlying file)
-  find_duplicate_groups    — songs sharing the same normalised title+artist
-  trigger_library_rescan   — start a filesystem rescan in the background
 """
 import json
 import logging
 import os
+import time
 from typing import Any, Awaitable, Callable, Optional
+
+import aiosqlite
 
 from . import database as db
 from .library import library
@@ -290,11 +284,126 @@ async def _t_find_duplicate_groups(limit: int = 50) -> dict:
     return {"groups": groups, "returned": len(groups)}
 
 
-async def _t_trigger_library_rescan() -> dict:
+async def _t_rescan_library() -> dict:
     """Start a filesystem rescan in the background (doesn't block)."""
     import asyncio
     asyncio.create_task(library.scan())
     return {"started": True}
+
+
+# ── Database export / import ────────────────────────────────────────────────
+
+_EXPORT_VERSION = 1
+_EXPORT_FIELDS = (
+    "id", "file_path", "cdg_path", "kind",
+    "title", "artist", "year", "genre",
+    "likes", "metadata_locked", "is_duplicate", "metadata_updated",
+    "duration_secs", "added_at", "scanned_at",
+)
+_IMPORT_FIELDS = {
+    "title", "artist", "year", "genre",
+    "likes", "metadata_locked", "is_duplicate", "metadata_updated",
+}
+
+
+async def _t_export_db() -> dict:
+    """
+    Dump every row of the songs table. Use this as a backup before a
+    destructive change, or to feed import_db later. The payload includes
+    file paths so an import on a differently-rooted library can still
+    match by id (the id itself is sha256(path)).
+    """
+    async with aiosqlite.connect(db._DB) as conn:
+        conn.row_factory = aiosqlite.Row
+        async with conn.execute(
+            f"SELECT {', '.join(_EXPORT_FIELDS)} FROM songs ORDER BY id"
+        ) as cur:
+            rows = await cur.fetchall()
+
+    songs = [dict(r) for r in rows]
+    return {
+        "version":     _EXPORT_VERSION,
+        "exported_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "count":       len(songs),
+        "songs":       songs,
+    }
+
+
+async def _t_import_db(
+    songs: list,
+    match: str = "id",
+    dry_run: bool = False,
+) -> dict:
+    """
+    Merge metadata from an export_db payload back into the current songs
+    table. Rows are matched by `match` ('id' or 'file_path'); unmatched
+    rows are reported and left untouched (no inserts). Only metadata
+    fields are written — file_path, cdg_path, kind, added_at and
+    scanned_at are never overwritten.
+    """
+    if not isinstance(songs, list):
+        raise ValueError("`songs` must be a list of row dicts from export_db")
+    if match not in ("id", "file_path"):
+        raise ValueError("`match` must be 'id' or 'file_path'")
+
+    updated = 0
+    skipped: list[dict] = []
+    updates: list[tuple] = []
+
+    async with aiosqlite.connect(db._DB) as conn:
+        conn.row_factory = aiosqlite.Row
+        if match == "id":
+            async with conn.execute("SELECT id FROM songs") as cur:
+                existing = {r[0] for r in await cur.fetchall()}
+            key_lookup = {sid: sid for sid in existing}
+        else:
+            async with conn.execute("SELECT id, file_path FROM songs") as cur:
+                rows = await cur.fetchall()
+            key_lookup = {r["file_path"]: r["id"] for r in rows}
+
+        for src in songs:
+            if not isinstance(src, dict):
+                skipped.append({"reason": "not-a-dict", "value": src})
+                continue
+            key = src.get(match)
+            if key is None:
+                skipped.append({"reason": f"missing-{match}", "src": src})
+                continue
+            sid = key_lookup.get(key)
+            if sid is None:
+                skipped.append({
+                    "reason":  "no-match",
+                    "match":   match,
+                    "key":     key,
+                    "title":   src.get("title"),
+                    "artist":  src.get("artist"),
+                })
+                continue
+
+            fields = {k: src[k] for k in _IMPORT_FIELDS if k in src}
+            if not fields:
+                skipped.append({"reason": "no-fields", "id": sid})
+                continue
+            set_clause = ", ".join(f"{k} = ?" for k in fields)
+            updates.append((set_clause, list(fields.values()) + [sid]))
+
+        if not dry_run:
+            for set_clause, values in updates:
+                await conn.execute(
+                    f"UPDATE songs SET {set_clause} WHERE id = ?", values
+                )
+            if updates:
+                await conn.commit()
+            updated = len(updates)
+
+    return {
+        "matched":       len(updates),
+        "updated":       updated,
+        "skipped_count": len(skipped),
+        "skipped":       skipped[:50],   # cap report size
+        "dry_run":       bool(dry_run),
+        "match":         match,
+    }
 
 
 # ── Tool registry ────────────────────────────────────────────────────────────
@@ -479,13 +588,45 @@ TOOLS: dict[str, dict] = {
         },
         "handler": _t_find_duplicate_groups,
     },
-    "trigger_library_rescan": {
+    "rescan_library": {
         "description": (
             "Start a background filesystem rescan. Returns immediately; the "
             "scan completes asynchronously and new songs will show up after."
         ),
         "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
-        "handler": _t_trigger_library_rescan,
+        "handler": _t_rescan_library,
+    },
+    "export_db": {
+        "description": (
+            "Dump every row of the songs table as JSON (full backup). "
+            "Pair with import_db to restore metadata after a rescan or a "
+            "destructive cleanup."
+        ),
+        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+        "handler": _t_export_db,
+    },
+    "import_db": {
+        "description": (
+            "Destructive: merge metadata from an export_db payload back "
+            "into the songs table. Only metadata fields (title/artist/"
+            "year/genre/likes/metadata_locked/is_duplicate/metadata_updated) "
+            "are written; file paths and kinds are never overwritten. "
+            "Rows are matched by `match`='id' (default) or 'file_path'; "
+            "unmatched rows are reported in `skipped` and left untouched "
+            "(no inserts). Pass dry_run=true to preview without writing."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "songs":   {"type": "array",
+                            "description": "The `songs` array from an export_db response."},
+                "match":   {"type": "string", "enum": ["id", "file_path"], "default": "id"},
+                "dry_run": {"type": "boolean", "default": False},
+            },
+            "required": ["songs"],
+            "additionalProperties": False,
+        },
+        "handler": _t_import_db,
     },
 }
 

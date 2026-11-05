@@ -76,11 +76,35 @@ async def update_metadata(song_id: str, body: MetadataUpdate):
 
 
 @router.delete("/library/{song_id}")
-async def remove_song(song_id: str):
-    if not await get_song(song_id):
+async def remove_song(
+    song_id: str,
+    delete_file: bool = Query(False, description="Also unlink the media file(s) on disk."),
+):
+    import os
+    existing = await get_song(song_id)
+    if not existing:
         raise HTTPException(status_code=404, detail="Song not found")
+
+    deleted_files: list[str] = []
+    file_errors: list[str] = []
+    if delete_file:
+        for p in (existing.get("file_path"), existing.get("cdg_path")):
+            if not p:
+                continue
+            try:
+                if os.path.exists(p):
+                    os.remove(p)
+                    deleted_files.append(p)
+            except OSError as e:
+                file_errors.append(f"{p}: {e}")
+                log.warning("Failed to delete %s: %s", p, e)
+
     await delete_song(song_id)
-    return {"deleted": song_id}
+    return {
+        "deleted":       song_id,
+        "deleted_files": deleted_files,
+        "file_errors":   file_errors,
+    }
 
 
 # ── Re-detect from file ────────────────────────────────────────────────────────
