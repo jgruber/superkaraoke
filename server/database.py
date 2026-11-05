@@ -279,17 +279,52 @@ async def get_library_stats() -> dict:
     return dict(row) if row else {}
 
 
-async def update_song_metadata(song_id: str, fields: dict) -> Optional[dict]:
+_DESTRUCTIVE_META_FIELDS = {"title", "artist", "year", "genre", "is_duplicate"}
+
+
+async def update_song_metadata(
+    song_id: str, fields: dict, *, force: bool = False,
+) -> Optional[dict]:
     """
     Update user-editable metadata fields.
-    If `metadata_locked` is not in `fields`, default to locking (1) so an
-    explicit edit protects against rescan overwrites. Pass `metadata_locked`
-    explicitly (0 or 1) to control the lock yourself.
+
+    Lock protection:
+      - If the stored row has metadata_locked=1 AND the caller did NOT pass
+        `metadata_locked` in `fields` AND `force` is False, then title,
+        artist, year, genre and is_duplicate are DROPPED from the update
+        (likes may still change). This is the safety net so drive-by
+        writes from code that is not lock-aware cannot clobber curated
+        metadata. The UI save() sends `metadata_locked` so user edits
+        from the modal still work normally.
+
+      - If `metadata_locked` is not in `fields`, default to locking (1) so
+        an explicit edit protects against rescan overwrites.
     """
-    allowed = {"title", "artist", "year", "genre", "likes", "metadata_locked", "is_duplicate", "metadata_updated"}
+    allowed = {
+        "title", "artist", "year", "genre", "likes",
+        "metadata_locked", "is_duplicate", "metadata_updated",
+    }
     updates = {k: v for k, v in fields.items() if k in allowed}
     if not updates:
         return await get_song(song_id)
+
+    existing = await get_song(song_id)
+    if not existing:
+        return None
+
+    caller_wrote_lock = "metadata_locked" in updates
+    if existing.get("metadata_locked") and not caller_wrote_lock and not force:
+        dropped = {k: v for k, v in updates.items() if k in _DESTRUCTIVE_META_FIELDS}
+        if dropped:
+            log.warning(
+                "update_song_metadata: honoring lock on %s (%r by %r); "
+                "dropped %s. Pass force=True or include metadata_locked "
+                "to override.",
+                song_id, existing.get("title"), existing.get("artist"), dropped,
+            )
+            updates = {k: v for k, v in updates.items() if k not in _DESTRUCTIVE_META_FIELDS}
+        if not updates:
+            return existing
 
     if "metadata_locked" not in updates:
         updates["metadata_locked"] = 1
@@ -308,8 +343,26 @@ async def update_song_metadata(song_id: str, fields: dict) -> Optional[dict]:
     return _row_to_song(row) if row else None
 
 
-async def redetect_song_metadata(song_id: str, metadata: dict) -> Optional[dict]:
-    """Apply freshly-detected metadata and clear the lock."""
+async def redetect_song_metadata(
+    song_id: str, metadata: dict, *, force: bool = False,
+) -> Optional[dict]:
+    """
+    Apply freshly-detected metadata and clear the lock.
+    This is an explicit destructive action — if the stored row is locked
+    and `force` is False, the call is refused (returns the existing row
+    unchanged).
+    """
+    existing = await get_song(song_id)
+    if not existing:
+        return None
+    if existing.get("metadata_locked") and not force:
+        log.warning(
+            "redetect_song_metadata: refusing lock bypass on %s (%r by %r). "
+            "Pass force=True to override.",
+            song_id, existing.get("title"), existing.get("artist"),
+        )
+        return existing
+
     async with aiosqlite.connect(_DB) as db:
         db.row_factory = aiosqlite.Row
         await db.execute("""
@@ -393,8 +446,16 @@ async def apply_mb_to_db(
     """
     Apply a MusicBrainz match to the database after files have been renamed.
     Handles the case where new_id already exists (e.g. duplicate path collision).
-    Returns the updated song row.
+    Returns the updated song row. (Explicit user action; lock check is
+    enforced at the caller before files are renamed on disk.)
     """
+    existing = await get_song(old_id)
+    if existing and existing.get("metadata_locked"):
+        log.info(
+            "apply_mb_to_db: overwriting locked row %s (%r by %r → %r by %r)",
+            old_id, existing.get("title"), existing.get("artist"), title, artist,
+        )
+
     async with aiosqlite.connect(_DB) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(
@@ -424,17 +485,35 @@ async def apply_mb_to_db(
     return _row_to_song(row) if row else None
 
 
-async def remove_missing_songs(valid_ids: set[str]):
-    """Remove songs from DB whose files no longer exist on disk."""
+async def remove_missing_songs(valid_ids: set[str]) -> int:
+    """
+    Remove songs from DB whose files no longer exist on disk. Logs each
+    locked row that is dropped so the owner can see what the scan removed.
+    Returns the number of rows deleted.
+    """
     if not valid_ids:
-        return
+        return 0
     placeholders = ",".join("?" * len(valid_ids))
     async with aiosqlite.connect(_DB) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            f"SELECT id, title, artist, metadata_locked "
+            f"FROM songs WHERE id NOT IN ({placeholders})",
+            list(valid_ids),
+        ) as cur:
+            dead = await cur.fetchall()
+        locked_dead = [r for r in dead if r["metadata_locked"]]
+        for r in locked_dead:
+            log.warning(
+                "Scan removed locked row %s (%r by %r) — file is gone from disk.",
+                r["id"], r["title"], r["artist"],
+            )
         await db.execute(
             f"DELETE FROM songs WHERE id NOT IN ({placeholders})",
             list(valid_ids),
         )
         await db.commit()
+    return len(dead)
 
 
 # ── Legacy like count (kept for backwards compat with song router) ─────────────

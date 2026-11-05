@@ -13,12 +13,24 @@ services:
     environment:
       SK_MEDIA_DIR: /media/karaoke
       SK_DB_PATH: /data/superkaraoke.db
+      # Tell the bgutil-ytdlp-pot-provider plugin where its PO token
+      # generator lives (the bgutil-pot sidecar below).
+      GETPOT_BGUTIL_BASE_URL: http://bgutil-pot:4416
     restart: unless-stopped
+    depends_on:
+      - bgutil-pot
     # Optional: limit CPU to prevent ffmpeg from starving other containers
     # deploy:
     #   resources:
     #     limits:
     #       cpus: "2.0"
+
+  # YouTube Proof-of-Origin (PO) token generator. yt-dlp needs this to
+  # fetch streams on most player clients; the plugin inside the
+  # superkaraoke container calls out to this sidecar via HTTP.
+  bgutil-pot:
+    image: brainicism/bgutil-ytdlp-pot-provider:latest
+    restart: unless-stopped
 
 volumes:
   # Docker-managed volume for the library database

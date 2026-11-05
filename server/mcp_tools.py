@@ -77,6 +77,7 @@ async def _t_update_song_metadata(
     artist: Optional[str] = None,
     genre: Optional[str] = None,
     year: Optional[int] = None,
+    force: bool = False,
 ) -> dict:
     fields: dict = {}
     if title is not None:  fields["title"]  = title.strip()
@@ -88,10 +89,19 @@ async def _t_update_song_metadata(
             raise ValueError("year must be an integer")
     if not fields:
         raise ValueError("No fields to update")
-    updated = await db.update_song_metadata(song_id, fields)
+    existing = await db.get_song(song_id)
+    updated = await db.update_song_metadata(song_id, fields, force=bool(force))
     if not updated:
         raise ValueError(f"Song not found: {song_id}")
-    return {"updated": updated, "fields": fields}
+    # If the row was locked and the agent didn't force, the destructive
+    # fields were dropped — surface that so the agent sees nothing changed.
+    was_locked = bool(existing and existing.get("metadata_locked"))
+    return {
+        "updated":           updated,
+        "fields":            fields,
+        "was_locked":        was_locked,
+        "lock_honored":      was_locked and not force,
+    }
 
 
 async def _t_delete_song(song_id: str, delete_file: bool = False) -> dict:
@@ -333,6 +343,7 @@ async def _t_import_db(
     songs: list,
     match: str = "id",
     dry_run: bool = False,
+    respect_lock: bool = False,
 ) -> dict:
     """
     Merge metadata from an export_db payload back into the current songs
@@ -340,6 +351,11 @@ async def _t_import_db(
     rows are reported and left untouched (no inserts). Only metadata
     fields are written — file_path, cdg_path, kind, added_at and
     scanned_at are never overwritten.
+
+    By default this tool writes over locked rows (so cleanup workflows
+    can re-apply curated metadata). Pass `respect_lock=True` to skip
+    destructive metadata writes on locked rows and report them in the
+    `locked_skipped` list.
     """
     if not isinstance(songs, list):
         raise ValueError("`songs` must be a list of row dicts from export_db")
@@ -348,18 +364,22 @@ async def _t_import_db(
 
     updated = 0
     skipped: list[dict] = []
+    locked_touched: list[dict] = []
+    locked_skipped: list[dict] = []
     updates: list[tuple] = []
 
     async with aiosqlite.connect(db._DB) as conn:
         conn.row_factory = aiosqlite.Row
+        async with conn.execute(
+            "SELECT id, file_path, metadata_locked, title, artist FROM songs"
+        ) as cur:
+            rows = await cur.fetchall()
         if match == "id":
-            async with conn.execute("SELECT id FROM songs") as cur:
-                existing = {r[0] for r in await cur.fetchall()}
-            key_lookup = {sid: sid for sid in existing}
+            key_lookup = {r["id"]: r for r in rows}
         else:
-            async with conn.execute("SELECT id, file_path FROM songs") as cur:
-                rows = await cur.fetchall()
-            key_lookup = {r["file_path"]: r["id"] for r in rows}
+            key_lookup = {r["file_path"]: r for r in rows}
+
+        destructive = _IMPORT_FIELDS & {"title", "artist", "year", "genre", "is_duplicate"}
 
         for src in songs:
             if not isinstance(src, dict):
@@ -369,8 +389,8 @@ async def _t_import_db(
             if key is None:
                 skipped.append({"reason": f"missing-{match}", "src": src})
                 continue
-            sid = key_lookup.get(key)
-            if sid is None:
+            existing = key_lookup.get(key)
+            if existing is None:
                 skipped.append({
                     "reason":  "no-match",
                     "match":   match,
@@ -379,11 +399,34 @@ async def _t_import_db(
                     "artist":  src.get("artist"),
                 })
                 continue
+            sid = existing["id"]
 
             fields = {k: src[k] for k in _IMPORT_FIELDS if k in src}
             if not fields:
                 skipped.append({"reason": "no-fields", "id": sid})
                 continue
+
+            row_locked = bool(existing["metadata_locked"])
+            if row_locked and respect_lock:
+                dropped = {k: v for k, v in fields.items() if k in destructive}
+                fields  = {k: v for k, v in fields.items() if k not in destructive}
+                if dropped:
+                    locked_skipped.append({
+                        "id":       sid,
+                        "title":    existing["title"],
+                        "artist":   existing["artist"],
+                        "dropped":  list(dropped.keys()),
+                    })
+                if not fields:
+                    continue
+            elif row_locked and (destructive & set(fields)):
+                locked_touched.append({
+                    "id":     sid,
+                    "title":  existing["title"],
+                    "artist": existing["artist"],
+                    "writes": sorted(destructive & set(fields)),
+                })
+
             set_clause = ", ".join(f"{k} = ?" for k in fields)
             updates.append((set_clause, list(fields.values()) + [sid]))
 
@@ -396,13 +439,24 @@ async def _t_import_db(
                 await conn.commit()
             updated = len(updates)
 
+    if locked_touched:
+        log.warning(
+            "import_db: wrote destructive fields to %d locked row(s); first 5: %s",
+            len(locked_touched), locked_touched[:5],
+        )
+
     return {
-        "matched":       len(updates),
-        "updated":       updated,
-        "skipped_count": len(skipped),
-        "skipped":       skipped[:50],   # cap report size
-        "dry_run":       bool(dry_run),
-        "match":         match,
+        "matched":              len(updates),
+        "updated":              updated,
+        "skipped_count":        len(skipped),
+        "skipped":              skipped[:50],
+        "locked_touched_count": len(locked_touched),
+        "locked_touched":       locked_touched[:50],
+        "locked_skipped_count": len(locked_skipped),
+        "locked_skipped":       locked_skipped[:50],
+        "dry_run":              bool(dry_run),
+        "respect_lock":         bool(respect_lock),
+        "match":                match,
     }
 
 
@@ -452,7 +506,11 @@ TOOLS: dict[str, dict] = {
     "update_song_metadata": {
         "description": (
             "Rewrite one or more metadata fields on a song. Any omitted field "
-            "is left as-is. Returns the updated row."
+            "is left as-is. Returns the updated row. If the row is locked "
+            "(metadata_locked=1), destructive fields (title/artist/year/genre) "
+            "are dropped unless force=true; the response's `lock_honored` "
+            "tells you whether a drop happened. The lock is set to 1 after a "
+            "successful write."
         ),
         "inputSchema": {
             "type": "object",
@@ -462,6 +520,8 @@ TOOLS: dict[str, dict] = {
                 "artist":  {"type": "string"},
                 "genre":   {"type": "string"},
                 "year":    {"type": "integer"},
+                "force":   {"type": "boolean", "default": False,
+                            "description": "Override metadata_locked and write anyway."},
             },
             "required": ["song_id"],
             "additionalProperties": False,
@@ -613,15 +673,21 @@ TOOLS: dict[str, dict] = {
             "are written; file paths and kinds are never overwritten. "
             "Rows are matched by `match`='id' (default) or 'file_path'; "
             "unmatched rows are reported in `skipped` and left untouched "
-            "(no inserts). Pass dry_run=true to preview without writing."
+            "(no inserts). Pass dry_run=true to preview without writing. "
+            "By default this tool writes over locked rows and reports "
+            "them in `locked_touched`; pass respect_lock=true to skip "
+            "destructive writes on locked rows (reported in "
+            "`locked_skipped`)."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
-                "songs":   {"type": "array",
-                            "description": "The `songs` array from an export_db response."},
-                "match":   {"type": "string", "enum": ["id", "file_path"], "default": "id"},
-                "dry_run": {"type": "boolean", "default": False},
+                "songs":        {"type": "array",
+                                 "description": "The `songs` array from an export_db response."},
+                "match":        {"type": "string", "enum": ["id", "file_path"], "default": "id"},
+                "dry_run":      {"type": "boolean", "default": False},
+                "respect_lock": {"type": "boolean", "default": False,
+                                 "description": "Skip destructive writes on metadata_locked rows."},
             },
             "required": ["songs"],
             "additionalProperties": False,

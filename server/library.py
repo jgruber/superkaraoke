@@ -160,9 +160,13 @@ class Library:
                 log.info("Scan progress: %d / %d new files",
                          min(i + chunk, len(new_files)), len(new_files))
 
-        await remove_missing_songs(found_ids)
+        removed = await remove_missing_songs(found_ids)
         self._song_count = await count_songs()
-        log.info("Scan complete: %d songs", self._song_count)
+        log.info(
+            "Scan complete: %d songs total (new=%d, touched=%d, removed=%d). "
+            "Known rows metadata was NOT touched by this scan.",
+            self._song_count, len(new_files), len(known), removed,
+        )
 
     # ── Lookup API ────────────────────────────────────────────────────────────
 
