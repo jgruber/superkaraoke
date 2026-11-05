@@ -152,8 +152,15 @@ function initLibrary() {
 
     // ── Edit modal ────────────────────────────────────────────────────────
     openEdit(s) {
-      // Deep copy so edits don't mutate the table row before saving
-      this.song = { ...s }
+      // Deep copy so edits don't mutate the table row before saving.
+      // Coerce integer flags to booleans: Alpine's x-model on a single
+      // checkbox only toggles `checked` for boolean/array values; an
+      // integer 1 leaves the box visually unchecked.
+      this.song = {
+        ...s,
+        metadata_locked: !!s.metadata_locked,
+        is_duplicate:    !!s.is_duplicate,
+      }
       this.mbOpen = false
       this.mbResults = []
       this.mbError = null
@@ -242,7 +249,11 @@ function initLibrary() {
         const r = await fetch(`/api/library/${this.song.id}/redetect`, { method: 'POST' })
         if (!r.ok) throw new Error()
         const updated = await r.json()
-        this.song = { ...updated }
+        this.song = {
+          ...updated,
+          metadata_locked: !!updated.metadata_locked,
+          is_duplicate:    !!updated.is_duplicate,
+        }
         this.mbTitle  = updated.title
         this.mbArtist = updated.artist
         const idx = this.songs.findIndex(s => s.id === updated.id)
