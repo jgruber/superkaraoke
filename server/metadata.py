@@ -36,22 +36,30 @@ _TRAIL_SUFFIX = re.compile(
 _TRAIL_YTID = re.compile(r'[\s_]\[?[A-Za-z0-9_-]{11}\]?\s*$')
 # YouTube video ID anywhere in the title, in [], (), or space-delimited
 _ANY_YTID = re.compile(r'[\s_\-]*[\[\(]?[A-Za-z0-9_-]{11}[\]\)]?\s*$')
-# Noise phrases YouTube/karaoke uploaders stack onto titles
-_TITLE_NOISE = re.compile(
-    r'\s*[\(\[\{][^\)\]\}]*?(?:'
+# Core noise words (karaoke/quality/uploader branding)
+_NOISE_WORDS = (
     r'official(?:\s+(?:video|audio|music\s+video|lyric\s+video))?|'
     r'lyric(?:s)?(?:\s+video)?|music\s+video|audio|hd|4k|1080p|720p|'
-    r'karaoke(?:\s+version)?|instrumental|backing\s+track|no\s+vocal|'
-    r'vocal\s+guide|with\s+lyrics|on\s+screen\s+lyrics|sing[\s\-]?along|'
-    r'piano\s+karaoke|acoustic\s+karaoke'
-    r')[^\)\]\}]*[\)\]\}]\s*',
+    r'karaoke(?:\s+version)?|karaoke\s+song|instrumental|backing\s+track|'
+    r'no\s+vocal|vocal\s+guide|with\s+lyrics|on\s+screen\s+lyrics|'
+    r'sing[\s\-]?along|piano\s+karaoke|acoustic\s+karaoke|'
+    r'karafun|singking|sing\s+king|stingray|zoom\s+karaoke|'
+    r'tgsstudio|party\s+tyme|sunfly'
+)
+# Noise phrases YouTube/karaoke uploaders stack onto titles (bracketed)
+_TITLE_NOISE = re.compile(
+    rf'\s*[\(\[\{{][^\)\]\}}]*?(?:{_NOISE_WORDS})[^\)\]\}}]*[\)\]\}}]\s*',
     re.IGNORECASE,
 )
 # Trailing standalone "— Karaoke" / "- Official Video" without brackets
 _TRAIL_DASH_NOISE = re.compile(
-    r'\s*[-–—]\s*(?:official(?:\s+(?:video|audio|lyric\s+video|music\s+video))?|'
-    r'karaoke(?:\s+version)?|instrumental|lyric(?:s)?(?:\s+video)?|'
-    r'music\s+video|hd|4k)\s*$',
+    rf'\s*[-–—]\s*(?:{_NOISE_WORDS})\s*$',
+    re.IGNORECASE,
+)
+# Pipe-delimited noise segments (e.g. "Artist | Song | Karaoke Version | KaraFun")
+# Drops any " | <noise>" segment regardless of position.
+_PIPE_NOISE = re.compile(
+    rf'\s*\|\s*[^|]*?(?:{_NOISE_WORDS})[^|]*?(?=\s*\||\s*$)',
     re.IGNORECASE,
 )
 
@@ -189,21 +197,67 @@ def clean_youtube_title(title: str) -> str:
     """
     Normalize a YouTube video title for human display and for MB queries.
     Strips video-ID suffixes and common uploader noise
-    (official/lyric/karaoke/hd/4k/… in parens or after a dash).
+    (official/lyric/karaoke/hd/4k/… in parens, after a dash, or between
+    pipe-delimited segments).
     """
     s = title.strip()
-    # Repeatedly strip bracketed noise — titles often stack several
+    # Repeatedly strip noise — titles often stack several phrases
     prev = None
     while prev != s:
         prev = s
         s = _TITLE_NOISE.sub(' ', s).strip()
         s = _TRAIL_DASH_NOISE.sub('', s).strip()
+        s = _PIPE_NOISE.sub('', s).strip()
     # Trailing YouTube ID (either bracketed or raw after _/space/dash)
     s = _TRAIL_YTID.sub('', s).strip()
     s = _ANY_YTID.sub('', s).strip()
-    # Collapse whitespace and trim leftover punctuation
-    s = re.sub(r'\s{2,}', ' ', s).strip(' -–—_')
+    # Collapse whitespace and leftover delimiters
+    s = re.sub(r'\s{2,}', ' ', s).strip(' -–—_|')
+    s = re.sub(r'\s*\|\s*\|+\s*', ' | ', s).strip(' |')
     return s
+
+
+def split_title_candidates(title: str, fallback_artist: str = "") -> list[tuple[str, str]]:
+    """
+    Produce candidate (recording_title, recording_artist) pairs from a cleaned
+    title. Uploaders are inconsistent about which side is which, so we try
+    both orderings and let MusicBrainz confirm.
+
+    Returns a list in query-priority order; duplicates removed.
+    """
+    s = title.strip()
+    seen: set[tuple[str, str]] = set()
+    out: list[tuple[str, str]] = []
+
+    def push(t: str, a: str):
+        t = t.strip(' -–—_|').strip()
+        a = a.strip(' -–—_|').strip()
+        if not t:
+            return
+        key = (t.lower(), a.lower())
+        if key in seen:
+            return
+        seen.add(key)
+        out.append((t, a))
+
+    for sep in (' - ', ' | ', ' – ', ' — '):
+        if sep in s:
+            parts = [p.strip() for p in s.split(sep) if p.strip()]
+            if len(parts) >= 2:
+                # First two parts, either ordering
+                push(parts[0], parts[1])
+                push(parts[1], parts[0])
+                # Three+ parts (e.g. Song | Artist | Album): try the first
+                # with each subsequent part as the artist candidate.
+                for i in range(2, min(len(parts), 4)):
+                    push(parts[0], parts[i])
+                    push(parts[i], parts[0])
+                    push(parts[1], parts[i])
+                    push(parts[i], parts[1])
+
+    # Finally, the untouched title with whatever artist we have
+    push(s, fallback_artist)
+    return out
 
 
 def clean_for_mb_query(title: str) -> tuple[str, str]:
@@ -221,19 +275,29 @@ def clean_for_mb_query(title: str) -> tuple[str, str]:
     return clean_title, artist_hint or parsed_artist
 
 
-def pick_best_mb_match(candidates: list[dict], min_score: int = 100) -> Optional[dict]:
+def pick_best_mb_match(candidates: list[dict], min_score: int = 100,
+                       prefer_oldest: bool = True) -> Optional[dict]:
     """
     Return the best candidate at or above *min_score*, or None.
-    Only candidates at the top score are considered.
-    Among ties, prefer the earliest release year (no-year entries sort last).
+
+    Entries are first gathered within the top-score *band* (top score and
+    anything within 5 points of it — MusicBrainz treats these as equally
+    good matches). Among the band:
+      - prefer_oldest=True  → earliest year wins (original pressing).
+      - prefer_oldest=False → top score wins outright, year tie-breaks.
+    Entries without a year sort last in either mode.
     """
     eligible = [c for c in candidates if c.get("score", 0) >= min_score]
     if not eligible:
         return None
     top_score = max(c["score"] for c in eligible)
-    top = [c for c in eligible if c["score"] == top_score]
-    top.sort(key=lambda c: (c.get("year") is None, c.get("year") or 0))
-    return top[0]
+    band = [c for c in eligible if c["score"] >= top_score - 5]
+    if prefer_oldest:
+        band.sort(key=lambda c: (c.get("year") is None, c.get("year") or 0))
+    else:
+        band = [c for c in band if c["score"] == top_score]
+        band.sort(key=lambda c: (c.get("year") is None, c.get("year") or 0))
+    return band[0]
 
 
 # ── MusicBrainz lookup ─────────────────────────────────────────────────────────

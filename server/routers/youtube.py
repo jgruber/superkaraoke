@@ -166,7 +166,8 @@ async def _run_download(job_id: str, url: str, channel: str):
         )
         from ..metadata import (
             extract_metadata, parse_filename, search_musicbrainz,
-            clean_for_mb_query, clean_youtube_title, pick_best_mb_match,
+            clean_for_mb_query, clean_youtube_title,
+            split_title_candidates, pick_best_mb_match,
         )
 
         filename = job.get("filename") or ""
@@ -254,29 +255,52 @@ async def _run_download(job_id: str, url: str, channel: str):
             return
 
         # ── MusicBrainz auto-fix ──────────────────────────────────────────────
-        # Use the split artist/title so queries don't contain "Artist - Title"
-        # strings that MB will never find as a recording name.
+        # Generate (title, artist) candidate pairs from the cleaned YT title
+        # (handles " - ", " | ", " – " separators and either ordering), then
+        # hit MB until one matches. If yt-dlp gave us explicit track+artist,
+        # that's the strongest candidate so we put it first.
         clean_title, style_artist = clean_for_mb_query(yt_title)
-        search_title = yt_track or split_title or clean_title
-        search_artist = yt_artist or split_artist or style_artist or meta_artist
+        fallback_artist = yt_artist or style_artist or meta_artist or ""
 
-        # Two queries: (title+artist) first, then (title alone) as a fallback.
-        # MB scoring: perfect=100; good matches often land in the 85–95 band when
-        # the uploader has polluted the title, so accept down to 90.
+        candidate_pairs: list[tuple[str, str]] = []
+        if yt_track:
+            candidate_pairs.append((yt_track, fallback_artist))
+        candidate_pairs.extend(split_title_candidates(clean_title, fallback_artist))
+
         mb_applied = False
         best = None
-        if search_title:
+        if candidate_pairs:
             job["message"] = "Looking up MusicBrainz…"
-            try:
-                if search_artist:
-                    candidates = await search_musicbrainz(search_title, search_artist)
-                    best = pick_best_mb_match(candidates, min_score=90)
-                if not best:
-                    candidates = await search_musicbrainz(search_title)
-                    best = pick_best_mb_match(candidates, min_score=95)
-            except Exception as exc:
-                log.warning("MB lookup failed for job %s: %s", job_id, exc)
-                best = None
+            # Within match band, prefer oldest release year (original recording
+            # over later covers / re-releases).
+            for cand_title, cand_artist in candidate_pairs:
+                try:
+                    results = await search_musicbrainz(cand_title, cand_artist)
+                    candidate = pick_best_mb_match(
+                        results, min_score=90, prefer_oldest=True,
+                    )
+                    if candidate:
+                        best = candidate
+                        log.info(
+                            "MB match: title=%r artist=%r → '%s - %s' year=%s score=%d",
+                            cand_title, cand_artist,
+                            candidate["artist"], candidate["title"],
+                            candidate.get("year"), candidate.get("score", 0),
+                        )
+                        break
+                except Exception as exc:
+                    log.warning("MB query failed (%r / %r): %s",
+                                cand_title, cand_artist, exc)
+                    continue
+            # Last-ditch: just the cleaned title alone
+            if not best and clean_title:
+                try:
+                    results = await search_musicbrainz(clean_title)
+                    best = pick_best_mb_match(
+                        results, min_score=95, prefer_oldest=True,
+                    )
+                except Exception as exc:
+                    log.warning("MB title-only fallback failed: %s", exc)
 
         if best:
             try:
