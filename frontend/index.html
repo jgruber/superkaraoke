@@ -886,15 +886,20 @@
                 <span x-show="v.duration" class="ml-2 tabular-nums" x-text="v.duration"></span>
               </p>
               <template x-for="[jid, job] in Object.entries(ytDownloads).filter(([,j]) => j.title === v.title)" :key="jid">
-                <div class="mt-1 flex items-center gap-2">
-                  <div class="flex-1 h-1.5 rounded-full bg-gray-200 dark:bg-gray-700 overflow-hidden">
-                    <div class="h-full bg-brand-500 transition-all duration-300 rounded-full"
-                      :style="`width:${job.progress}%`"></div>
+                <div class="mt-1">
+                  <div class="flex items-center gap-2">
+                    <div class="flex-1 h-1.5 rounded-full bg-gray-200 dark:bg-gray-700 overflow-hidden">
+                      <div class="h-full bg-brand-500 transition-all duration-300 rounded-full"
+                        :style="`width:${job.progress}%`"></div>
+                    </div>
+                    <span class="text-xs tabular-nums shrink-0"
+                      :class="job.status === 'done' ? 'text-green-500' : job.status === 'error' ? 'text-red-500' : 'text-gray-400'"
+                      x-text="job.status === 'done' ? '✓ Done' : job.status === 'error' ? '✕ Error' : job.progress + '%'">
+                    </span>
                   </div>
-                  <span class="text-xs tabular-nums shrink-0"
-                    :class="job.status === 'done' ? 'text-green-500' : job.status === 'error' ? 'text-red-500' : 'text-gray-400'"
-                    x-text="job.status === 'done' ? '✓ Done' : job.status === 'error' ? '✕ Error' : job.progress + '%'">
-                  </span>
+                  <p x-show="job.message && job.status !== 'done' && job.status !== 'error'"
+                     class="text-[11px] text-gray-500 dark:text-gray-400 mt-0.5 italic"
+                     x-text="job.message"></p>
                 </div>
               </template>
             </div>

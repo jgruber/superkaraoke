@@ -151,9 +151,13 @@ async def _run_download(job_id: str, url: str, channel: str):
     job = _jobs[job_id]
     try:
         loop = asyncio.get_running_loop()
+        job["message"] = "Downloading from YouTube…"
         await loop.run_in_executor(None, _do_download, job_id, url)
-        job["status"] = "done"
+        # Keep status as "processing" until song_id is written, so the frontend
+        # poll doesn't hit done+no-song_id and bail before auto-queue.
+        job["status"] = "processing"
         job["progress"] = 100
+        job["message"] = "Indexing file…"
 
         from ..library import library, _song_id
         from ..database import (
@@ -161,13 +165,14 @@ async def _run_download(job_id: str, url: str, channel: str):
             bulk_upsert_songs, touch_song_paths,
         )
         from ..metadata import (
-            extract_metadata, search_musicbrainz,
+            extract_metadata, parse_filename, search_musicbrainz,
             clean_for_mb_query, clean_youtube_title, pick_best_mb_match,
         )
 
         filename = job.get("filename") or ""
         if not filename:
             log.warning("No final filename recorded for job %s", job_id)
+            job["status"] = "done"
             return
 
         fp  = Path(filename)
@@ -185,7 +190,8 @@ async def _run_download(job_id: str, url: str, channel: str):
         # the download. YouTube Music videos expose track/artist/release_year
         # directly; regular uploads give uploader/upload_date/tags.
         yt_info = job.get("yt_info") or {}
-        yt_title = clean_youtube_title(yt_info.get("title") or meta.get("title") or fp.stem)
+        yt_title_raw = yt_info.get("title") or meta.get("title") or fp.stem
+        yt_title = clean_youtube_title(yt_title_raw)
         yt_track = (yt_info.get("track") or "").strip()
         yt_artist = (yt_info.get("artist") or "").strip()
         yt_year   = yt_info.get("release_year")
@@ -194,10 +200,20 @@ async def _run_download(job_id: str, url: str, channel: str):
             if len(upload) >= 4 and upload[:4].isdigit():
                 yt_year = int(upload[:4])
 
-        # Seed title/artist/year from the best YouTube signal we have,
-        # overriding whatever mutagen read out of the raw mp4 container.
-        meta_title = yt_track or yt_title or meta.get("title") or fp.stem
-        meta_artist = yt_artist or meta.get("artist") or channel or yt_info.get("uploader", "")
+        # When yt-dlp didn't give us track/artist (plain upload), split the
+        # cleaned title on " - " as karaoke titles conventionally do:
+        # "Artist - Song Name". Without this we'd ship the whole string to
+        # MB as the recording title and never match.
+        split_artist, split_title = "", yt_title
+        if not yt_track:
+            parts = parse_filename(yt_title)
+            if parts.get("artist") and parts.get("title"):
+                split_artist = parts["artist"]
+                split_title  = parts["title"]
+
+        # Seed title/artist/year from the best signal available.
+        meta_title  = yt_track or split_title or yt_title or meta.get("title") or fp.stem
+        meta_artist = yt_artist or split_artist or meta.get("artist") or channel or yt_info.get("uploader", "")
         meta_year   = meta.get("year") or yt_year
         meta_genre  = meta.get("genre") or ""
         # Lock so the next library scan can't clobber what we just set.
@@ -238,18 +254,20 @@ async def _run_download(job_id: str, url: str, channel: str):
             return
 
         # ── MusicBrainz auto-fix ──────────────────────────────────────────────
-        search_title, style_artist = clean_for_mb_query(yt_title)
-        search_title = yt_track or search_title
-        search_artist = yt_artist or style_artist or song.get("artist", "") or channel
+        # Use the split artist/title so queries don't contain "Artist - Title"
+        # strings that MB will never find as a recording name.
+        clean_title, style_artist = clean_for_mb_query(yt_title)
+        search_title = yt_track or split_title or clean_title
+        search_artist = yt_artist or split_artist or style_artist or meta_artist
 
-        # Try two queries: (title+artist) first, then (title alone) as a fallback.
+        # Two queries: (title+artist) first, then (title alone) as a fallback.
         # MB scoring: perfect=100; good matches often land in the 85–95 band when
         # the uploader has polluted the title, so accept down to 90.
         mb_applied = False
         best = None
         if search_title:
+            job["message"] = "Looking up MusicBrainz…"
             try:
-                candidates = []
                 if search_artist:
                     candidates = await search_musicbrainz(search_title, search_artist)
                     best = pick_best_mb_match(candidates, min_score=90)
@@ -304,13 +322,16 @@ async def _run_download(job_id: str, url: str, channel: str):
                 log.warning("MB apply failed for job %s: %s", job_id, exc)
 
         # ── Fallback: rename file to a clean "{artist} - {title}.ext" and
-        #             make sure year/genre from YT are preserved. ───────────
+        #             fill year/genre from yt-dlp info when MB missed. ──────
         if not mb_applied:
             song = await get_song(sid)
             if song:
                 cur_artist = song.get("artist") or ""
                 cur_title  = song.get("title")  or ""
                 cur_year   = song.get("year")
+                cur_genre  = song.get("genre") or ""
+                fallback_genre = _guess_genre_from_tags(yt_info.get("tags") or [])
+
                 rename_stem = None
                 if cur_artist and cur_title:
                     rename_stem = _UNSAFE_CHARS.sub(
@@ -336,26 +357,62 @@ async def _run_download(job_id: str, url: str, channel: str):
                                 title     = cur_title,
                                 artist    = cur_artist,
                                 year      = cur_year or yt_year,
-                                genre     = song.get("genre") or "",
+                                genre     = cur_genre or fallback_genre,
                             )
                             log.info("YT fallback rename: %s -> %s", fp.name, new_fp.name)
                             sid = new_sid
                         except OSError as exc:
                             log.warning("YT fallback rename failed: %s", exc)
+                else:
+                    # No rename needed; still need to backfill year/genre
+                    patch: dict = {"metadata_locked": 0}
+                    if not cur_year and yt_year:
+                        patch["year"] = yt_year
+                    if not cur_genre and fallback_genre:
+                        patch["genre"] = fallback_genre
+                    if len(patch) > 1:
+                        await update_song_metadata(sid, patch, force=True)
 
-                # Make sure year gets set if we have it from yt-dlp
-                if not cur_year and yt_year:
-                    await update_song_metadata(
-                        sid, {"year": yt_year, "metadata_locked": 0}, force=True,
-                    )
-
-        # song_id is set last so the frontend always gets the final (renamed) ID
+        # song_id is set last so the frontend always gets the final (renamed) ID.
+        # status flips to "done" only *after* song_id is in place — otherwise
+        # the frontend poll can race us, see done+no-song_id, and bail.
         job["song_id"] = sid
+        job["status"] = "done"
+        job["message"] = "Added to library"
 
     except Exception as exc:
         log.error("Download failed for job %s: %s", job_id, exc)
         job["status"] = "error"
         job["error"] = str(exc)
+
+
+# Common genre tokens YouTube tags use — maps lowercase key → display form
+_GENRE_WHITELIST: dict[str, str] = {
+    "rock": "Rock", "pop": "Pop", "country": "Country",
+    "country pop": "Country Pop", "country rock": "Country Rock",
+    "hip hop": "Hip Hop", "rap": "Rap", "r&b": "R&B", "soul": "Soul",
+    "jazz": "Jazz", "blues": "Blues", "folk": "Folk", "metal": "Metal",
+    "punk": "Punk", "electronic": "Electronic", "edm": "EDM",
+    "dance": "Dance", "house": "House", "techno": "Techno",
+    "disco": "Disco", "reggae": "Reggae", "classical": "Classical",
+    "indie": "Indie", "indie rock": "Indie Rock", "indie pop": "Indie Pop",
+    "alternative": "Alternative", "alternative rock": "Alternative Rock",
+    "christian": "Christian", "gospel": "Gospel", "latin": "Latin",
+    "k-pop": "K-Pop", "j-pop": "J-Pop", "bluegrass": "Bluegrass",
+    "americana": "Americana", "singer-songwriter": "Singer-Songwriter",
+    "funk": "Funk",
+}
+
+
+def _guess_genre_from_tags(tags: list) -> str:
+    """Pick a genre name from a list of YouTube tags."""
+    for t in tags:
+        if not isinstance(t, str):
+            continue
+        display = _GENRE_WHITELIST.get(t.strip().lower())
+        if display:
+            return display
+    return ""
 
 
 def _do_download(job_id: str, url: str):
