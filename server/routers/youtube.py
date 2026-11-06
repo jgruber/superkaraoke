@@ -162,7 +162,7 @@ async def _run_download(job_id: str, url: str, channel: str):
         )
         from ..metadata import (
             extract_metadata, search_musicbrainz,
-            clean_for_mb_query, pick_best_mb_match,
+            clean_for_mb_query, clean_youtube_title, pick_best_mb_match,
         )
 
         filename = job.get("filename") or ""
@@ -180,12 +180,52 @@ async def _run_download(job_id: str, url: str, channel: str):
         meta = await loop.run_in_executor(
             None, extract_metadata, str(fp), None, "video", True,
         )
+
+        # Pull in richer metadata from the yt-dlp info dict captured during
+        # the download. YouTube Music videos expose track/artist/release_year
+        # directly; regular uploads give uploader/upload_date/tags.
+        yt_info = job.get("yt_info") or {}
+        yt_title = clean_youtube_title(yt_info.get("title") or meta.get("title") or fp.stem)
+        yt_track = (yt_info.get("track") or "").strip()
+        yt_artist = (yt_info.get("artist") or "").strip()
+        yt_year   = yt_info.get("release_year")
+        if not yt_year:
+            upload = yt_info.get("upload_date") or ""
+            if len(upload) >= 4 and upload[:4].isdigit():
+                yt_year = int(upload[:4])
+
+        # Seed title/artist/year from the best YouTube signal we have,
+        # overriding whatever mutagen read out of the raw mp4 container.
+        meta_title = yt_track or yt_title or meta.get("title") or fp.stem
+        meta_artist = yt_artist or meta.get("artist") or channel or yt_info.get("uploader", "")
+        meta_year   = meta.get("year") or yt_year
+        meta_genre  = meta.get("genre") or ""
+        # Lock so the next library scan can't clobber what we just set.
+        meta.update({
+            "title":  meta_title,
+            "artist": meta_artist,
+            "year":   meta_year,
+            "genre":  meta_genre,
+        })
+
         await bulk_upsert_songs([{
             "id": sid, "file_path": str(fp), "cdg_path": None, "kind": "video",
             **meta,
         }])
-        # If the sid already existed (re-download), make sure paths/kind are current.
         await touch_song_paths(sid, str(fp), None, "video")
+        # Write the YT-derived fields on top (bulk_upsert is INSERT OR IGNORE,
+        # so for an existing row we need this to overwrite stale values).
+        await update_song_metadata(
+            sid,
+            {
+                "title":           meta_title,
+                "artist":          meta_artist,
+                "year":            meta_year,
+                "genre":           meta_genre,
+                "metadata_locked": 0,
+            },
+            force=True,
+        )
 
         # Kick off a background rescan so sibling files picked up by yt-dlp
         # (thumbnails, description files, etc.) or renamed-in-place entries
@@ -198,64 +238,116 @@ async def _run_download(job_id: str, url: str, channel: str):
             return
 
         # ── MusicBrainz auto-fix ──────────────────────────────────────────────
-        # Build query from stored title (YouTube ID and "in the style of" stripped)
-        raw_title = song.get("title", "") or Path(filename).stem
-        search_title, style_artist = clean_for_mb_query(raw_title)
-        search_artist = style_artist or song.get("artist", "") or channel
+        search_title, style_artist = clean_for_mb_query(yt_title)
+        search_title = yt_track or search_title
+        search_artist = yt_artist or style_artist or song.get("artist", "") or channel
 
+        # Try two queries: (title+artist) first, then (title alone) as a fallback.
+        # MB scoring: perfect=100; good matches often land in the 85–95 band when
+        # the uploader has polluted the title, so accept down to 90.
         mb_applied = False
+        best = None
         if search_title:
             try:
-                candidates = await search_musicbrainz(search_title, search_artist)
-                best = pick_best_mb_match(candidates, min_score=100)
-                if best:
-                    fp  = Path(song["file_path"])
-                    cp  = Path(song["cdg_path"]) if song.get("cdg_path") else None
-                    ext = fp.suffix.lower()
-
-                    safe_stem = _UNSAFE_CHARS.sub(
-                        "", f"{best['artist']} - {best['title']}"
-                    ).strip().rstrip(".")
-                    new_fp = fp.parent / f"{safe_stem}{ext}"
-                    new_cp = (cp.parent / f"{safe_stem}.cdg") if cp else None
-
-                    rel    = str(new_fp.relative_to(settings.media_dir))
-                    new_id = hashlib.sha256(rel.encode()).hexdigest()[:12]
-
-                    if fp != new_fp and fp.exists():
-                        fp.rename(new_fp)
-                    if cp and new_cp and cp != new_cp and cp.exists():
-                        cp.rename(new_cp)
-
-                    updated = await apply_mb_to_db(
-                        old_id   = sid,
-                        new_id   = new_id,
-                        file_path= str(new_fp),
-                        cdg_path = str(new_cp) if new_cp else None,
-                        title    = best["title"],
-                        artist   = best["artist"],
-                        year     = best.get("year"),
-                        genre    = best.get("genre") or "",
-                    )
-                    if updated:
-                        sid = new_id
-                        mb_applied = True
-                        job["mb_applied"] = {
-                            "title": best["title"],
-                            "artist": best["artist"],
-                            "score": best["score"],
-                        }
-                        log.info("MB auto-fix: '%s - %s' (score=%d)",
-                                 best["artist"], best["title"], best["score"])
+                candidates = []
+                if search_artist:
+                    candidates = await search_musicbrainz(search_title, search_artist)
+                    best = pick_best_mb_match(candidates, min_score=90)
+                if not best:
+                    candidates = await search_musicbrainz(search_title)
+                    best = pick_best_mb_match(candidates, min_score=95)
             except Exception as exc:
-                log.warning("MB auto-fix failed for job %s: %s", job_id, exc)
+                log.warning("MB lookup failed for job %s: %s", job_id, exc)
+                best = None
 
-        # ── Fallback: use YouTube channel as artist if still blank ────────────
+        if best:
+            try:
+                fp  = Path(song["file_path"])
+                cp  = Path(song["cdg_path"]) if song.get("cdg_path") else None
+                ext = fp.suffix.lower()
+
+                safe_stem = _UNSAFE_CHARS.sub(
+                    "", f"{best['artist']} - {best['title']}"
+                ).strip().rstrip(".")
+                new_fp = fp.parent / f"{safe_stem}{ext}"
+                new_cp = (cp.parent / f"{safe_stem}.cdg") if cp else None
+
+                rel    = str(new_fp.relative_to(settings.media_dir))
+                new_id = hashlib.sha256(rel.encode()).hexdigest()[:12]
+
+                if fp != new_fp and fp.exists():
+                    fp.rename(new_fp)
+                if cp and new_cp and cp != new_cp and cp.exists():
+                    cp.rename(new_cp)
+
+                updated = await apply_mb_to_db(
+                    old_id   = sid,
+                    new_id   = new_id,
+                    file_path= str(new_fp),
+                    cdg_path = str(new_cp) if new_cp else None,
+                    title    = best["title"],
+                    artist   = best["artist"],
+                    year     = best.get("year") or yt_year,
+                    genre    = best.get("genre") or "",
+                )
+                if updated:
+                    sid = new_id
+                    mb_applied = True
+                    job["mb_applied"] = {
+                        "title":  best["title"],
+                        "artist": best["artist"],
+                        "score":  best["score"],
+                    }
+                    log.info("MB auto-fix: '%s - %s' (score=%d)",
+                             best["artist"], best["title"], best["score"])
+            except Exception as exc:
+                log.warning("MB apply failed for job %s: %s", job_id, exc)
+
+        # ── Fallback: rename file to a clean "{artist} - {title}.ext" and
+        #             make sure year/genre from YT are preserved. ───────────
         if not mb_applied:
             song = await get_song(sid)
-            if song and not song.get("artist") and channel:
-                await update_song_metadata(sid, {"artist": channel, "metadata_locked": 0})
-                log.info("Set artist='%s' for downloaded song %s", channel, sid)
+            if song:
+                cur_artist = song.get("artist") or ""
+                cur_title  = song.get("title")  or ""
+                cur_year   = song.get("year")
+                rename_stem = None
+                if cur_artist and cur_title:
+                    rename_stem = _UNSAFE_CHARS.sub(
+                        "", f"{cur_artist} - {cur_title}"
+                    ).strip().rstrip(".")
+                elif cur_title:
+                    rename_stem = _UNSAFE_CHARS.sub("", cur_title).strip().rstrip(".")
+
+                fp = Path(song["file_path"])
+                new_sid = sid
+                if rename_stem and fp.stem != rename_stem:
+                    new_fp = fp.parent / f"{rename_stem}{fp.suffix}"
+                    if fp.exists() and not new_fp.exists():
+                        try:
+                            fp.rename(new_fp)
+                            rel     = str(new_fp.relative_to(settings.media_dir))
+                            new_sid = hashlib.sha256(rel.encode()).hexdigest()[:12]
+                            await apply_mb_to_db(
+                                old_id    = sid,
+                                new_id    = new_sid,
+                                file_path = str(new_fp),
+                                cdg_path  = None,
+                                title     = cur_title,
+                                artist    = cur_artist,
+                                year      = cur_year or yt_year,
+                                genre     = song.get("genre") or "",
+                            )
+                            log.info("YT fallback rename: %s -> %s", fp.name, new_fp.name)
+                            sid = new_sid
+                        except OSError as exc:
+                            log.warning("YT fallback rename failed: %s", exc)
+
+                # Make sure year gets set if we have it from yt-dlp
+                if not cur_year and yt_year:
+                    await update_song_metadata(
+                        sid, {"year": yt_year, "metadata_locked": 0}, force=True,
+                    )
 
         # song_id is set last so the frontend always gets the final (renamed) ID
         job["song_id"] = sid
@@ -279,5 +371,20 @@ def _do_download(job_id: str, url: str):
         "no_warnings": True,
         "noplaylist": True,
     }
+    job = _jobs.get(job_id)
     with YoutubeDL(opts) as ydl:
-        ydl.download([url])
+        info = ydl.extract_info(url, download=True)
+        if job is not None and isinstance(info, dict):
+            # YouTube Music videos expose track/artist/release_year directly;
+            # regular videos give uploader/upload_date/tags we can fall back to.
+            job["yt_info"] = {
+                "title":        info.get("title", ""),
+                "track":        info.get("track") or "",
+                "artist":       info.get("artist") or "",
+                "album":        info.get("album") or "",
+                "uploader":     info.get("uploader") or info.get("channel") or "",
+                "release_year": info.get("release_year"),
+                "upload_date":  info.get("upload_date") or "",
+                "tags":         info.get("tags") or [],
+                "categories":   info.get("categories") or [],
+            }

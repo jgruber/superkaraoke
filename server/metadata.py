@@ -34,6 +34,26 @@ _TRAIL_SUFFIX = re.compile(
 )
 # YouTube video ID appended to filename: "Title_dQw4w9WgXcQ" or "Title [dQw4w9WgXcQ]"
 _TRAIL_YTID = re.compile(r'[\s_]\[?[A-Za-z0-9_-]{11}\]?\s*$')
+# YouTube video ID anywhere in the title, in [], (), or space-delimited
+_ANY_YTID = re.compile(r'[\s_\-]*[\[\(]?[A-Za-z0-9_-]{11}[\]\)]?\s*$')
+# Noise phrases YouTube/karaoke uploaders stack onto titles
+_TITLE_NOISE = re.compile(
+    r'\s*[\(\[\{][^\)\]\}]*?(?:'
+    r'official(?:\s+(?:video|audio|music\s+video|lyric\s+video))?|'
+    r'lyric(?:s)?(?:\s+video)?|music\s+video|audio|hd|4k|1080p|720p|'
+    r'karaoke(?:\s+version)?|instrumental|backing\s+track|no\s+vocal|'
+    r'vocal\s+guide|with\s+lyrics|on\s+screen\s+lyrics|sing[\s\-]?along|'
+    r'piano\s+karaoke|acoustic\s+karaoke'
+    r')[^\)\]\}]*[\)\]\}]\s*',
+    re.IGNORECASE,
+)
+# Trailing standalone "— Karaoke" / "- Official Video" without brackets
+_TRAIL_DASH_NOISE = re.compile(
+    r'\s*[-–—]\s*(?:official(?:\s+(?:video|audio|lyric\s+video|music\s+video))?|'
+    r'karaoke(?:\s+version)?|instrumental|lyric(?:s)?(?:\s+video)?|'
+    r'music\s+video|hd|4k)\s*$',
+    re.IGNORECASE,
+)
 
 
 def parse_filename(stem: str) -> dict:
@@ -141,6 +161,11 @@ _STYLE_OF = re.compile(
     r'^(.+?)\s+\(?\s*in\s+the\s+style\s+of\s+(.+?)\s*\)?\s*$',
     re.IGNORECASE,
 )
+# Match "in the style of Artist" anywhere (bracketed or bare), capturing the artist
+_STYLE_OF_ANY = re.compile(
+    r'in\s+the\s+style\s+of\s+([^\)\]\}\-–—\n]+?)(?=\s*[\)\]\}]|\s*[-–—]|\s*$)',
+    re.IGNORECASE,
+)
 
 
 def strip_style_of(title: str) -> tuple[str, str]:
@@ -154,14 +179,46 @@ def strip_style_of(title: str) -> tuple[str, str]:
     return title, ''
 
 
+def extract_style_of_hint(title: str) -> str:
+    """Pull just the 'in the style of …' artist, ignoring surrounding noise."""
+    m = _STYLE_OF_ANY.search(title)
+    return m.group(1).strip() if m else ''
+
+
+def clean_youtube_title(title: str) -> str:
+    """
+    Normalize a YouTube video title for human display and for MB queries.
+    Strips video-ID suffixes and common uploader noise
+    (official/lyric/karaoke/hd/4k/… in parens or after a dash).
+    """
+    s = title.strip()
+    # Repeatedly strip bracketed noise — titles often stack several
+    prev = None
+    while prev != s:
+        prev = s
+        s = _TITLE_NOISE.sub(' ', s).strip()
+        s = _TRAIL_DASH_NOISE.sub('', s).strip()
+    # Trailing YouTube ID (either bracketed or raw after _/space/dash)
+    s = _TRAIL_YTID.sub('', s).strip()
+    s = _ANY_YTID.sub('', s).strip()
+    # Collapse whitespace and trim leftover punctuation
+    s = re.sub(r'\s{2,}', ' ', s).strip(' -–—_')
+    return s
+
+
 def clean_for_mb_query(title: str) -> tuple[str, str]:
     """
     Prepare a raw title string for a MusicBrainz query.
-    Strips YouTube ID suffixes, then extracts any 'in the style of Artist'.
-    Returns (clean_title, artist_hint).
+    Strips YouTube ID suffixes and uploader noise, then extracts any
+    'in the style of Artist'.  Returns (clean_title, artist_hint).
     """
-    title = _TRAIL_YTID.sub('', title).strip()
-    return strip_style_of(title)
+    # Grab the "in the style of X" hint BEFORE noise-stripping — the noise
+    # regex is eager and will swallow the whole "(Karaoke in the style of X)"
+    # group along with the artist.
+    artist_hint = extract_style_of_hint(title)
+    cleaned = clean_youtube_title(title)
+    clean_title, parsed_artist = strip_style_of(cleaned)
+    return clean_title, artist_hint or parsed_artist
 
 
 def pick_best_mb_match(candidates: list[dict], min_score: int = 100) -> Optional[dict]:
