@@ -156,21 +156,45 @@ async def _run_download(job_id: str, url: str, channel: str):
         job["progress"] = 100
 
         from ..library import library, _song_id
-        from ..database import get_song, update_song_metadata, apply_mb_to_db
-        from ..metadata import search_musicbrainz, clean_for_mb_query, pick_best_mb_match
-
-        # Rescan so the new file is indexed
-        await library.scan()
+        from ..database import (
+            get_song, update_song_metadata, apply_mb_to_db,
+            bulk_upsert_songs, touch_song_paths,
+        )
+        from ..metadata import (
+            extract_metadata, search_musicbrainz,
+            clean_for_mb_query, pick_best_mb_match,
+        )
 
         filename = job.get("filename") or ""
         if not filename:
             log.warning("No final filename recorded for job %s", job_id)
             return
 
-        sid  = _song_id(Path(filename))
+        fp  = Path(filename)
+        sid = _song_id(fp)
+
+        # Index the new file directly rather than waiting for a full scan.
+        # Full scans can take a minute on big libraries and are skipped if
+        # one is already in progress (e.g. startup scan) — leaving the
+        # downloaded file unindexed and the queue-add silently dropped.
+        meta = await loop.run_in_executor(
+            None, extract_metadata, str(fp), None, "video", True,
+        )
+        await bulk_upsert_songs([{
+            "id": sid, "file_path": str(fp), "cdg_path": None, "kind": "video",
+            **meta,
+        }])
+        # If the sid already existed (re-download), make sure paths/kind are current.
+        await touch_song_paths(sid, str(fp), None, "video")
+
+        # Kick off a background rescan so sibling files picked up by yt-dlp
+        # (thumbnails, description files, etc.) or renamed-in-place entries
+        # get reconciled. Non-blocking — don't delay the queue add.
+        asyncio.create_task(library.scan())
+
         song = await get_song(sid)
         if not song:
-            log.warning("Downloaded file not found in DB after scan: %s", filename)
+            log.warning("Downloaded file not in DB after direct upsert: %s", filename)
             return
 
         # ── MusicBrainz auto-fix ──────────────────────────────────────────────
