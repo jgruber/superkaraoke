@@ -685,33 +685,47 @@ function initApp() {
     },
 
     _pollDownload(job_id) {
+      // Idempotency: never let a flaky poll POST /api/queue twice for the
+      // same job (network blip after a successful enqueue, double render,
+      // tab wake, etc.). Track completion per-job-id in a Set that outlives
+      // the ytDownloads reactive state.
+      this._ytFinishedJobs = this._ytFinishedJobs || new Set()
       const poll = async () => {
+        if (this._ytFinishedJobs.has(job_id)) return
         try {
           const res = await fetch(`/api/youtube/download/${job_id}`)
           const job = await res.json()
           this.ytDownloads = { ...this.ytDownloads, [job_id]: job }
           if (job.status === 'done') {
+            if (this._ytFinishedJobs.has(job_id)) return
+            this._ytFinishedJobs.add(job_id)
             if (job.song_id) {
-              // Use auth username if available, otherwise localStorage
               const user = this.authUser || localStorage.getItem('sk-username') || 'anonymous'
-              await fetch('/api/queue', {
-                method:  'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body:    JSON.stringify({ song_id: job.song_id, user }),
-              })
-              this.showToast(`"${job.title}" downloaded and added to queue`)
-              this.closeYouTube()
+              try {
+                await fetch('/api/queue', {
+                  method:  'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body:    JSON.stringify({ song_id: job.song_id, user }),
+                })
+                this.showToast(`"${job.title}" downloaded and added to queue`)
+                this.closeYouTube()
+              } catch {
+                this.showToast(`"${job.title}" downloaded but queue add failed`, 'error')
+              }
             } else {
               this.showToast(`"${job.title}" downloaded — search to add to queue`)
             }
             return
           }
           if (job.status === 'error') {
+            this._ytFinishedJobs.add(job_id)
             this.showToast(`Download failed: ${job.error || 'unknown error'}`, 'error')
             return
           }
           setTimeout(poll, 1500)
         } catch {
+          // Only retry on transient fetch/json errors — if we already finished,
+          // the check at the top of poll() will bail out.
           setTimeout(poll, 3000)
         }
       }

@@ -159,7 +159,7 @@ async def _run_download(job_id: str, url: str, channel: str):
         job["progress"] = 100
         job["message"] = "Indexing file…"
 
-        from ..library import library, _song_id
+        from ..library import _song_id
         from ..database import (
             get_song, update_song_metadata, apply_mb_to_db,
             bulk_upsert_songs, touch_song_paths,
@@ -244,10 +244,12 @@ async def _run_download(job_id: str, url: str, channel: str):
             force=True,
         )
 
-        # Kick off a background rescan so sibling files picked up by yt-dlp
-        # (thumbnails, description files, etc.) or renamed-in-place entries
-        # get reconciled. Non-blocking — don't delay the queue add.
-        asyncio.create_task(library.scan())
+        # NOTE: we intentionally don't kick off library.scan() here. A
+        # concurrent scan would race against the upcoming MB rename:
+        # its remove_missing_songs() snapshot predates the id migration,
+        # and the fresh row gets deleted as "missing on disk". Everything
+        # scan would pick up (the one new file) we've already upserted
+        # above, so there's nothing extra to reconcile.
 
         song = await get_song(sid)
         if not song:
