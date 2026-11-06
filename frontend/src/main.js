@@ -446,16 +446,24 @@ function initApp() {
 
     _handleWS(msg) {
       if (msg.type === 'state' || msg.type === 'queue_update') {
-        this.queue      = msg.queue       || []
-        this.nowPlaying = msg.now_playing || null
-        this.paused     = msg.now_playing?.paused || false
+        this.queue = msg.queue || []
         if (msg.now_playing) {
+          // A new song is playing — cancel any pending stop-fade and show it.
+          this._clearNowPlayingFade()
+          this.nowPlaying = msg.now_playing
+          this.paused     = msg.now_playing.paused || false
           if (typeof msg.now_playing.semitones === 'number')
             this.semitones = msg.now_playing.semitones
           if (typeof msg.now_playing.av_offset_ms === 'number')
             this.avOffsetMs = msg.now_playing.av_offset_ms
+        } else {
+          // Server says nothing's playing. Between-songs transitions send this
+          // too, with a 'play' arriving ~1–3s later once ffmpeg has started.
+          // Delay the clear so the pink banner doesn't flash to white and back.
+          this._scheduleNowPlayingFade()
         }
       } else if (msg.type === 'play') {
+        this._clearNowPlayingFade()
         this.nowPlaying = msg
         this.paused     = false
         if (typeof msg.semitones === 'number')   this.semitones  = msg.semitones
@@ -465,8 +473,25 @@ function initApp() {
       } else if (msg.type === 'resume') {
         this.paused = false
       } else if (msg.type === 'stop') {
+        this._scheduleNowPlayingFade()
+      }
+    },
+
+    _scheduleNowPlayingFade() {
+      if (this._nowPlayingFadeTimer) return
+      // Keep the banner up for a few seconds; a 'play' for the next song
+      // usually arrives within 1–3s and cancels this.
+      this._nowPlayingFadeTimer = setTimeout(() => {
         this.nowPlaying = null
-        this.paused     = false
+        this.paused = false
+        this._nowPlayingFadeTimer = null
+      }, 4000)
+    },
+
+    _clearNowPlayingFade() {
+      if (this._nowPlayingFadeTimer) {
+        clearTimeout(this._nowPlayingFadeTimer)
+        this._nowPlayingFadeTimer = null
       }
     },
 
